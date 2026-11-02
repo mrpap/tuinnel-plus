@@ -39,7 +39,11 @@ $ tuinnel-plus
 
 ## Installation
 
-From source (requires [Bun](https://bun.sh) to build):
+```bash
+npm install -g tuinnel-plus
+```
+
+Or from source (requires [Bun](https://bun.sh) to build):
 
 ```bash
 git clone https://github.com/mrpap/tuinnel-plus.git
@@ -248,6 +252,14 @@ Everything lives in `~/.tuinnel/` (set `TUINNEL_HOME` to use another directory, 
 ```
 
 `lastState` records whether you left a tunnel running; the service starts those tunnels again when it starts.
+
+## Releasing
+
+1. On `dev`, bump `version` in `package.json` and add an entry to `CHANGELOG.md`.
+2. Merge `dev` into `main` through a pull request.
+3. Tag the merge commit on `main` and push the tag: `git tag v0.1.1 && git push origin v0.1.1`.
+
+The release workflow then tests, builds and publishes to npm (with provenance) and creates the GitHub release. It refuses tags that aren't on `main` or don't match `package.json`.
 
 ## Development
 

@@ -229,7 +229,8 @@ $('auth-form').addEventListener('submit', async (e) => {
     await api(authMode === 'setup' ? '/api/auth/setup' : '/api/auth/login', { method: 'POST', body: { password } });
     await enterApp();
   } catch (err) {
-    if (err.status === 403) error.textContent = 'The first password must be set from the machine running tuinnel-plus (http://127.0.0.1).';
+    if (err.status === 403 && authMode === 'setup') error.textContent = 'The first password must be set from the machine running tuinnel-plus (http://127.0.0.1).';
+    else if (err.status === 403) error.textContent = `The service refused this sign-in: ${err.message}`;
     else if (err.status === 429) error.textContent = 'Too many attempts, try later.';
     else error.textContent = err.message;
   } finally {

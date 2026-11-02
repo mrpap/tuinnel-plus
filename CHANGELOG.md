@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+- Releases are built and published by GitHub Actions with npm provenance, and go live after approval on npm
+- Tests run on Linux and macOS for every change, and are more reliable on slower machines
+- No changes to how tuinnel-plus behaves
+
 ## 0.1.0
 
 First release of tuinnel-plus, based on [tuinnel](https://github.com/NickDunas/tuinnel) by Nick Dunas.

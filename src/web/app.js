@@ -1,5 +1,5 @@
 import {
-  initialState, applySnapshot, applyEvent, applyLogs, visibleTunnels, tunnelCounts, isRunning,
+  initialState, applySnapshot, applyEvent, applyLogs, needsLogHistory, visibleTunnels, tunnelCounts, isRunning,
   stateTone, stateLabel, formatUptime, parseRoute, routeHash, validateTunnelForm, knownTheme, nextTheme, themeLabel,
   ACCENT_PRESETS, DEFAULT_ACCENT_HUE, accentHex, brandSvg,
 } from './state.js';
@@ -759,7 +759,7 @@ function tunnelView(root) {
         h('div', { class: 'terminal-head' }, icon('terminal'), h('span', { class: 'mono' }, `cloudflared · ${name}`),
           h('span', { class: 'spacer' }), pausedPill, logFilter, logState),
         logView));
-      if (!(state.logs[name]?.length)) loadLogs(name);
+      if (needsLogHistory(state, name)) loadLogs(name);
       renderLogs();
     } else if (state.tab === 'metrics') {
       fill(metricsBody, h('div', { class: 'card placeholder' }, 'Loading metrics…'));
@@ -833,7 +833,7 @@ function tunnelView(root) {
 
   let lastConfigKey = '';
   buildPanel();
-  if (!(state.logs[name]?.length)) loadLogs(name);
+  if (needsLogHistory(state, name)) loadLogs(name);
 
   return {
     update() {

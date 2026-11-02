@@ -3,7 +3,7 @@
 export const MAX_LOGS = 1000;
 
 export function initialState() {
-  return { tunnels: {}, logs: {}, selected: null, filter: '', show: 'all', tab: 'details' };
+  return { tunnels: {}, logs: {}, historyLoaded: {}, selected: null, filter: '', show: 'all', tab: 'details' };
 }
 
 function sortedNames(tunnels) {
@@ -20,13 +20,26 @@ export function applySnapshot(state, wireTunnels) {
   const tunnels = {};
   for (const t of wireTunnels) tunnels[t.name] = t;
   const logs = {};
-  for (const name of Object.keys(tunnels)) logs[name] = state.logs[name] ?? [];
-  return { ...state, tunnels, logs, selected: keepSelection(state, tunnels) };
+  const historyLoaded = {};
+  for (const name of Object.keys(tunnels)) {
+    logs[name] = state.logs[name] ?? [];
+    if (state.historyLoaded[name]) historyLoaded[name] = true;
+  }
+  return { ...state, tunnels, logs, historyLoaded, selected: keepSelection(state, tunnels) };
 }
 
 /** Replace one tunnel's log buffer (from GET /api/tunnels/:name/logs). */
 export function applyLogs(state, name, events) {
-  return { ...state, logs: { ...state.logs, [name]: events.slice(-MAX_LOGS) } };
+  return {
+    ...state,
+    logs: { ...state.logs, [name]: events.slice(-MAX_LOGS) },
+    historyLoaded: { ...state.historyLoaded, [name]: true },
+  };
+}
+
+/** Live lines can arrive before a tunnel's log history has been fetched, so track the fetch itself. */
+export function needsLogHistory(state, name) {
+  return !state.historyLoaded[name];
 }
 
 /** Apply one SSE event: tunnel | log | added | removed. */
@@ -48,9 +61,11 @@ export function applyEvent(state, type, data) {
     case 'removed': {
       const tunnels = { ...state.tunnels };
       const logs = { ...state.logs };
+      const historyLoaded = { ...state.historyLoaded };
       delete tunnels[data.name];
       delete logs[data.name];
-      return { ...state, tunnels, logs, selected: keepSelection(state, tunnels) };
+      delete historyLoaded[data.name];
+      return { ...state, tunnels, logs, historyLoaded, selected: keepSelection(state, tunnels) };
     }
     default:
       return state;

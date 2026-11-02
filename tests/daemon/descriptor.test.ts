@@ -86,7 +86,9 @@ describe('daemon descriptor', () => {
     });
 
     test('a live tuinnel-plus serve process holds the lock', () => {
-      expect(isDaemonProcess(live('tuinnel-plus', 'serve'))).toBe(true);
+      const pid = live('tuinnel-plus', 'serve');
+      const command = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf-8' }).stdout.trim();
+      expect({ command, held: isDaemonProcess(pid) }).toEqual({ command, held: true });
     });
 
     test('a lock already held by this process counts as held', () => {

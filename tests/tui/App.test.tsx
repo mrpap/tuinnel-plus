@@ -5,8 +5,7 @@ import { App } from '../../src/tui/App.js';
 import type { TunnelRuntime } from '../../src/types.js';
 import { EventEmitter } from 'events';
 import { readConfig } from '../../src/config/store.js';
-
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+import { press, rendered, waitFor } from './wait.js';
 
 function makeTunnel(name: string, overrides: Partial<TunnelRuntime> = {}): TunnelRuntime {
   return {
@@ -95,8 +94,7 @@ describe('App', () => {
     const { props } = makeTestApp(['app']);
     const { lastFrame, stdin } = render(<App {...props} />);
 
-    stdin.write('q');
-    await delay(50);
+    await press({ stdin, lastFrame }, 'q');
 
     const frame = lastFrame();
     expect(frame).toContain('Tunnels keep running in the background service');
@@ -107,8 +105,7 @@ describe('App', () => {
     const { props } = makeTestApp(['app']);
     const { lastFrame, stdin } = render(<App {...props} />);
 
-    stdin.write('?');
-    await delay(50);
+    await press({ stdin, lastFrame }, '?');
 
     const frame = lastFrame();
     expect(frame).toContain('Keyboard Shortcuts');
@@ -122,13 +119,11 @@ describe('App', () => {
     const { lastFrame, stdin } = render(<App {...props} />);
 
     // Open help
-    stdin.write('?');
-    await delay(50);
+    await press({ stdin, lastFrame }, '?');
     expect(lastFrame()).toContain('Keyboard Shortcuts');
 
     // Close with any key
-    stdin.write('x');
-    await delay(50);
+    await press({ stdin, lastFrame }, 'x');
     expect(lastFrame()).not.toContain('Keyboard Shortcuts');
   });
 
@@ -144,12 +139,10 @@ describe('App', () => {
     const { props } = makeTestApp(['app']);
     const { lastFrame, stdin } = render(<App {...props} />);
 
-    stdin.write('q');
-    await delay(50);
+    await press({ stdin, lastFrame }, 'q');
     expect(lastFrame()).toContain('Tunnels keep running');
 
-    stdin.write('n');
-    await delay(50);
+    await press({ stdin, lastFrame }, 'n');
     // Should be back to dashboard
     expect(lastFrame()).not.toContain('Tunnels keep running');
     expect(lastFrame()).toContain('app');
@@ -163,18 +156,15 @@ describe('App', () => {
     expect(lastFrame()).toContain('Details');
 
     // Switch to logs tab
-    stdin.write('2');
-    await delay(50);
+    await press({ stdin, lastFrame }, '2');
     expect(lastFrame()).toContain('Connection Events');
 
     // Switch to metrics tab
-    stdin.write('3');
-    await delay(50);
+    await press({ stdin, lastFrame }, '3');
     expect(lastFrame()).toContain('Metrics');
 
     // Switch back to details
-    stdin.write('1');
-    await delay(50);
+    await press({ stdin, lastFrame }, '1');
     expect(lastFrame()).toContain('localhost');
   });
 
@@ -182,8 +172,7 @@ describe('App', () => {
     const { props } = makeTestApp(['app']);
     const { lastFrame, stdin } = render(<App {...props} />);
 
-    stdin.write('a');
-    await delay(50);
+    await press({ stdin, lastFrame }, 'a');
 
     const frame = lastFrame();
     expect(frame).toContain('Add Tunnel');
@@ -193,8 +182,7 @@ describe('App', () => {
     const { props } = makeTestApp(['app']);
     const { lastFrame, stdin } = render(<App {...props} />);
 
-    stdin.write('d');
-    await delay(50);
+    await press({ stdin, lastFrame }, 'd');
 
     const frame = lastFrame();
     expect(frame).toContain('Delete Tunnel');
@@ -221,8 +209,7 @@ describe('App', () => {
     const { props } = makeTestApp([], 'empty');
     const { lastFrame, stdin } = render(<App {...props} />);
 
-    stdin.write('a');
-    await delay(50);
+    await press({ stdin, lastFrame }, 'a');
 
     const frame = lastFrame();
     expect(frame).toContain('Add Tunnel');
@@ -232,8 +219,7 @@ describe('App', () => {
     const { props } = makeTestApp([], 'empty');
     const { lastFrame, stdin } = render(<App {...props} />);
 
-    stdin.write('q');
-    await delay(50);
+    await press({ stdin, lastFrame }, 'q');
 
     const frame = lastFrame();
     expect(frame).toContain('Tunnels keep running in the background service');
@@ -243,8 +229,7 @@ describe('App', () => {
     const { props } = makeTestApp(['app']);
     const { lastFrame, stdin } = render(<App {...props} />);
 
-    stdin.write('e');
-    await delay(50);
+    await press({ stdin, lastFrame }, 'e');
 
     const frame = lastFrame();
     expect(frame).toContain('Edit');
@@ -265,14 +250,13 @@ describe('App', () => {
 
       let completed = 0;
       const { props } = makeTestApp([], 'onboarding');
-      const { stdin } = render(<App {...props} onOnboardingComplete={async () => { completed++; }} />);
-      await delay(50);
-      stdin.write('tok-123');
-      await delay(20);
-      stdin.write('\r');
-      await delay(200);
+      const { stdin, lastFrame } = render(<App {...props} onOnboardingComplete={async () => { completed++; }} />);
+      await rendered({ stdin, lastFrame });
+      await press({ stdin, lastFrame }, 'tok-123');
+      await press({ stdin, lastFrame }, '\r');
 
-      expect(completed).toBe(1);
+      // Token validation is a (stubbed) network call, not a key press
+      await waitFor(() => expect(completed).toBe(1));
       // Written to the sandboxed state dir (tests/setup/isolate-state.ts), never ~/.tuinnel.
       expect(readConfig()?.apiToken).toBe('tok-123');
     });

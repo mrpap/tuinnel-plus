@@ -4,8 +4,7 @@ import { render } from 'ink-testing-library';
 import { App } from '../../src/tui/App.js';
 import type { TunnelRuntime } from '../../src/types.js';
 import { EventEmitter } from 'events';
-
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+import { press } from './wait.js';
 
 const CTRL_K = '\x0b';
 const DOWN = '\x1B[B';
@@ -65,8 +64,7 @@ describe('Command palette', () => {
   test('Ctrl+K opens the command palette', async () => {
     const { lastFrame, stdin } = renderApp();
 
-    stdin.write(CTRL_K);
-    await delay(50);
+    await press({ stdin, lastFrame }, CTRL_K);
 
     expect(lastFrame()).toContain('Command Palette');
   });
@@ -74,10 +72,8 @@ describe('Command palette', () => {
   test('typing filters the command list', async () => {
     const { lastFrame, stdin } = renderApp();
 
-    stdin.write(CTRL_K);
-    await delay(50);
-    stdin.write('restart');
-    await delay(50);
+    await press({ stdin, lastFrame }, CTRL_K);
+    await press({ stdin, lastFrame }, 'restart');
 
     const frame = lastFrame();
     expect(frame).toContain('Restart tunnel');
@@ -87,12 +83,9 @@ describe('Command palette', () => {
   test('Enter runs the highlighted command (Go to Logs)', async () => {
     const { lastFrame, stdin } = renderApp();
 
-    stdin.write(CTRL_K);
-    await delay(50);
-    stdin.write('logs');
-    await delay(50);
-    stdin.write('\r');
-    await delay(50);
+    await press({ stdin, lastFrame }, CTRL_K);
+    await press({ stdin, lastFrame }, 'logs');
+    await press({ stdin, lastFrame }, '\r');
 
     const frame = lastFrame();
     expect(frame).not.toContain('Command Palette');   // palette closed
@@ -102,24 +95,19 @@ describe('Command palette', () => {
   test('Esc closes the palette without running anything', async () => {
     const { lastFrame, stdin } = renderApp();
 
-    stdin.write(CTRL_K);
-    await delay(50);
+    await press({ stdin, lastFrame }, CTRL_K);
     expect(lastFrame()).toContain('Command Palette');
 
-    stdin.write(ESC);
-    await delay(50);
+    await press({ stdin, lastFrame }, ESC);
     expect(lastFrame()).not.toContain('Command Palette');
   });
 
   test('running "Add tunnel" opens the add wizard', async () => {
     const { lastFrame, stdin } = renderApp();
 
-    stdin.write(CTRL_K);
-    await delay(50);
-    stdin.write('add');
-    await delay(50);
-    stdin.write('\r');
-    await delay(50);
+    await press({ stdin, lastFrame }, CTRL_K);
+    await press({ stdin, lastFrame }, 'add');
+    await press({ stdin, lastFrame }, '\r');
 
     expect(lastFrame()).toContain('Add Tunnel');
   });
@@ -127,14 +115,10 @@ describe('Command palette', () => {
   test('arrows move the selection within filtered commands', async () => {
     const { lastFrame, stdin } = renderApp();
 
-    stdin.write(CTRL_K);
-    await delay(50);
-    stdin.write('go to'); // Go to Details / Logs / Metrics (in that order)
-    await delay(50);
-    stdin.write(DOWN);   // Details -> Logs
-    await delay(50);
-    stdin.write('\r');
-    await delay(50);
+    await press({ stdin, lastFrame }, CTRL_K);
+    await press({ stdin, lastFrame }, 'go to'); // Go to Details / Logs / Metrics (in that order)
+    await press({ stdin, lastFrame }, DOWN);   // Details -> Logs
+    await press({ stdin, lastFrame }, '\r');
 
     expect(lastFrame()).toContain('Connection Events'); // ran "Go to Logs", not Details
   });

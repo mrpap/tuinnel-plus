@@ -2,8 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import React from 'react';
 import { render } from 'ink-testing-library';
 import { DeleteConfirm } from '../../src/tui/DeleteConfirm.js';
-
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+import { press } from './wait.js';
 
 describe('DeleteConfirm', () => {
   test('renders tunnel name', () => {
@@ -83,7 +82,7 @@ describe('DeleteConfirm', () => {
 
   test('calls onConfirm on y key', async () => {
     let confirmed = false;
-    const { stdin } = render(
+    const { stdin, lastFrame } = render(
       <DeleteConfirm
         tunnelName="my-app"
         subdomain="my-app"
@@ -93,14 +92,13 @@ describe('DeleteConfirm', () => {
       />
     );
 
-    stdin.write('y');
-    await delay(50);
+    await press({ stdin, lastFrame }, 'y');
     expect(confirmed).toBe(true);
   });
 
   test('calls onCancel on n key', async () => {
     let cancelled = false;
-    const { stdin } = render(
+    const { stdin, lastFrame } = render(
       <DeleteConfirm
         tunnelName="my-app"
         subdomain="my-app"
@@ -110,8 +108,7 @@ describe('DeleteConfirm', () => {
       />
     );
 
-    stdin.write('n');
-    await delay(50);
+    await press({ stdin, lastFrame }, 'n');
     expect(cancelled).toBe(true);
   });
 });

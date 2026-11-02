@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync, statSync, writeFileSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { spawn, type ChildProcess } from 'child_process';
+import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import {
   daemonPaths, writeDescriptor, readDescriptor, acquireLock, releaseLock, DaemonRunningError, isDaemonProcess,
   type DaemonDescriptor,
@@ -68,10 +68,17 @@ describe('daemon descriptor', () => {
     let child: ChildProcess | null = null;
     afterEach(() => { child?.kill(); child = null; });
 
-    // `; true` keeps sh alive (no exec), so ps shows these argv words.
+    // `; true` keeps sh alive (no exec), so ps shows these argv words. On Linux
+    // spawn returns before the exec, so wait until ps shows the new command line.
     const live = (...argv: string[]) => {
       child = spawn('/bin/sh', ['-c', 'sleep 5; true', ...argv], { stdio: 'ignore' });
-      return child.pid!;
+      const pid = child.pid!;
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline) {
+        const cmd = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf-8' }).stdout;
+        if (cmd.includes('sleep 5')) break;
+      }
+      return pid;
     };
 
     test('a live pid that is not a tuinnel daemon does not hold the lock', () => {

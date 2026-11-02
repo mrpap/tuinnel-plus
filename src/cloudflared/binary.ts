@@ -143,9 +143,21 @@ export async function downloadBinary(
   return BINARY_PATH;
 }
 
+/**
+ * The cloudflared to run. TUINNEL_CLOUDFLARED points at an existing install
+ * (e.g. a package manager's, which keeps it updated); otherwise a managed copy
+ * is downloaded into the state directory.
+ */
 export async function ensureBinary(
   onProgress?: (downloaded: number, total: number | null) => void,
 ): Promise<string> {
+  const external = process.env.TUINNEL_CLOUDFLARED?.trim();
+  if (external) {
+    if (!existsSync(external)) {
+      throw new Error(`TUINNEL_CLOUDFLARED points to ${external}, which does not exist`);
+    }
+    return external;
+  }
   if (binaryExists()) {
     return BINARY_PATH;
   }

@@ -10,6 +10,37 @@ interface Check {
   run: () => Promise<{ ok: boolean; detail: string }>;
 }
 
+interface CloudflaredDeps {
+  env: Record<string, string | undefined>;
+  managedPath: string;
+  exists: (path: string) => boolean;
+  version: (path: string) => string;
+}
+
+const realDeps: CloudflaredDeps = {
+  env: process.env,
+  managedPath: BINARY_PATH,
+  exists: existsSync,
+  version: (path) => execFileSync(path, ['version', '--short'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim(),
+};
+
+/** Check the cloudflared tuinnel-plus will actually run (see ensureBinary). */
+export function checkCloudflared(deps: CloudflaredDeps = realDeps): { ok: boolean; detail: string } {
+  const external = deps.env.TUINNEL_CLOUDFLARED?.trim();
+  const path = external || deps.managedPath;
+  if (!deps.exists(path)) {
+    return external
+      ? { ok: false, detail: `TUINNEL_CLOUDFLARED points to ${external}, which does not exist` }
+      : { ok: false, detail: `Not found in ${BIN_DIR}/. Will be downloaded on first \`up\`` };
+  }
+  try {
+    const version = deps.version(path);
+    return { ok: true, detail: external ? `Version ${version} (${external}, from TUINNEL_CLOUDFLARED)` : `Version ${version} (managed)` };
+  } catch {
+    return { ok: false, detail: `${path} exists but does not run` };
+  }
+}
+
 const PASS = chalk.green('PASS');
 const FAIL = chalk.red('FAIL');
 
@@ -75,23 +106,7 @@ export async function doctorCommand(): Promise<void> {
     },
     {
       name: 'cloudflared binary',
-      run: async () => {
-        try {
-          const version = execFileSync('cloudflared', ['version', '--short'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
-          return { ok: true, detail: `Version ${version}` };
-        } catch {
-          // Check tuinnel-managed binary
-          try {
-            if (existsSync(BINARY_PATH)) {
-              const version = execFileSync(BINARY_PATH, ['version', '--short'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
-              return { ok: true, detail: `Version ${version} (managed)` };
-            }
-          } catch {
-            // fall through
-          }
-          return { ok: false, detail: `Not found in PATH or ${BIN_DIR}/. Will be downloaded on first \`up\`` };
-        }
-      },
+      run: async () => checkCloudflared(),
     },
     {
       name: 'Network connectivity',

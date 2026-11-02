@@ -18,8 +18,8 @@ async function boot(opts: { password?: string } = {}) {
   let port = 0;
   const made = createDaemonServer({
     service: new FakeBackend('app'),
-    guard: createGuard({ localToken: LOCAL, sessions }),
-    allowedHosts: () => [`127.0.0.1:${port}`],
+    guard: createGuard({ localToken: LOCAL, sessions, ownHosts: () => [`127.0.0.1:${port}`, 'admin.example.com'] }),
+    allowedHosts: () => [`127.0.0.1:${port}`, 'admin.example.com'],
     isSystemTunnel: () => false,
     auth: { store, sessions, limiter: new RateLimiter() },
   });
@@ -210,6 +210,28 @@ describe('auth routes', () => {
     expect(clientKey(req('127.0.0.1', '9.9.9.9'))).toBe('9.9.9.9');
     expect(clientKey(req('192.168.1.20', '9.9.9.9'))).toBe('192.168.1.20');
     expect(clientKey(req('192.168.1.20'))).toBe('192.168.1.20');
+  });
+
+  // cloudflared hands requests to the daemon as Host 127.0.0.1:<port>, while the
+  // browser's Origin is the public https address of the remote web UI.
+  const viaTunnel = { 'cf-connecting-ip': '1.2.3.4', origin: 'https://admin.example.com' };
+
+  test('remote sign-in through the tunnel is not mistaken for a cross-site request', async () => {
+    const { port } = await boot({ password: 'hunter2hunter2' });
+    expect((await login(port, 'nope-nope', viaTunnel)).status).toBe(401);
+    expect((await login(port, 'hunter2hunter2', viaTunnel)).status).toBe(200);
+  });
+
+  test('a signed-in remote browser can make changes through the tunnel', async () => {
+    const { port } = await boot({ password: 'hunter2hunter2' });
+    const cookie = pair(cookieOf(await login(port, 'hunter2hunter2', viaTunnel)));
+    const res = await raw(port, { method: 'POST', path: '/api/tunnels/app/start', body: {}, headers: { ...viaTunnel, cookie } });
+    expect(res.status).toBe(200);
+  });
+
+  test('other sites are still refused through the tunnel', async () => {
+    const { port } = await boot({ password: 'hunter2hunter2' });
+    expect((await login(port, 'hunter2hunter2', { ...viaTunnel, origin: 'https://evil.example' })).status).toBe(403);
   });
 
   test('isLoopbackPeer only trusts loopback sockets', () => {

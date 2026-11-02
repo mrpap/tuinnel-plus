@@ -152,7 +152,7 @@ export function createDaemonServer(deps: DaemonDeps): { server: Server; router: 
 
       if (PUBLIC_ROUTES.has(`${method} ${found.pattern}`)) {
         // Public auth routes skip the guard, so apply its CSRF check here.
-        if (!isSameOriginJson(req)) return sendError(res, 403, 'Cross-site request refused');
+        if (!isSameOriginJson(req, deps.allowedHosts())) return sendError(res, 403, 'Cross-site request refused');
       } else if (!(await deps.guard(ctx))) {
         return sendError(res, 401, 'Unauthorized');
       }

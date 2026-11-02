@@ -89,7 +89,7 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     const hub = new SseHub(service, { isSystemTunnel });
     const { server } = createDaemonServer({
       service,
-      guard: createGuard({ localToken, sessions }),
+      guard: createGuard({ localToken, sessions, ownHosts: () => allowedHostsFor(host, port, selfExpose.status()) }),
       auth: { store, sessions, limiter: new RateLimiter() },
       allowedHosts: () => allowedHostsFor(host, port, selfExpose.status()),
       isSystemTunnel,

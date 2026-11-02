@@ -66,6 +66,11 @@ describe('launchd plist', () => {
     }
   });
 
+  test('serviceEnv keeps TUINNEL_CLOUDFLARED so the service uses the same cloudflared', () => {
+    expect(serviceEnv({ PATH: '/p', TUINNEL_CLOUDFLARED: '/opt/homebrew/bin/cloudflared' }))
+      .toEqual({ PATH: '/p', TUINNEL_CLOUDFLARED: '/opt/homebrew/bin/cloudflared' });
+  });
+
   test('serviceEnv keeps TUINNEL_HOME and PATH, tokens only if set', () => {
     expect(serviceEnv({ TUINNEL_HOME: '/h', PATH: '/p', HOME: '/x' })).toEqual({ TUINNEL_HOME: '/h', PATH: '/p' });
     expect(serviceEnv({ PATH: '/p', CLOUDFLARE_API_TOKEN: 't' })).toEqual({ PATH: '/p', CLOUDFLARE_API_TOKEN: 't' });

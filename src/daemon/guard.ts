@@ -63,7 +63,12 @@ function safeEqual(a: string, b: string): boolean {
  * 0600 daemon.json as a bearer token; browsers present a session cookie.
  * Cookie-lane writes must be JSON and same-origin (CSRF defence).
  */
-export function createGuard(opts: { localToken: string; sessions: SessionStore }): (ctx: Ctx) => boolean {
+export function createGuard(opts: {
+  localToken: string;
+  sessions: SessionStore;
+  /** Host values the daemon answers to; see isSameOriginJson. */
+  ownHosts?: () => string[];
+}): (ctx: Ctx) => boolean {
   return ({ req }) => {
     const auth = /^Bearer (.+)$/.exec(req.headers.authorization ?? '');
     if (auth) return safeEqual(auth[1], opts.localToken);
@@ -71,23 +76,27 @@ export function createGuard(opts: { localToken: string; sessions: SessionStore }
     const sid = sessionId(req);
     if (!sid || !opts.sessions.valid(sid)) return false;
 
-    return isSameOriginJson(req);
+    return isSameOriginJson(req, opts.ownHosts?.() ?? []);
   };
 }
 
 /**
  * CSRF defence for browser writes: JSON (which forces a CORS preflight a
- * cross-site page can't pass) and, when an Origin is sent, our own host.
+ * cross-site page can't pass) and, when an Origin is sent, one of our own
+ * hosts. Through the self-expose tunnel the Host header is cloudflared's local
+ * target while the Origin is the public hostname, so `ownHosts` (the daemon's
+ * allowed hosts) is accepted as well as the request's own Host.
  * GET/HEAD always pass.
  */
-export function isSameOriginJson(req: IncomingMessage): boolean {
+export function isSameOriginJson(req: IncomingMessage, ownHosts: string[] = []): boolean {
   const method = req.method ?? 'GET';
   if (method === 'GET' || method === 'HEAD') return true;
   if (!(req.headers['content-type'] ?? '').startsWith('application/json')) return false;
   const origin = req.headers.origin;
   if (origin) {
     try {
-      if (new URL(origin).host !== req.headers.host) return false;
+      const host = new URL(origin).host;
+      if (host !== req.headers.host && !ownHosts.includes(host)) return false;
     } catch {
       return false;
     }

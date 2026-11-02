@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2
+
+- Fix: signing in to the web UI through remote access (self-expose) was refused as a cross-site request, and so was every change made after signing in remotely
+- The sign-in page no longer shows the first-password hint for unrelated errors
+- New `TUINNEL_CLOUDFLARED` setting to use an already installed `cloudflared` instead of a downloaded copy; `doctor` now reports the `cloudflared` that is actually used
+
 ## 0.1.1
 
 - Releases are built and published by GitHub Actions with npm provenance, and go live after approval on npm

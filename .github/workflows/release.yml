@@ -1,7 +1,8 @@
 name: Release
 
-# Push a tag like v0.1.1 on main to publish that version to npm and create a GitHub release.
+# Push a tag like v0.1.1 on main to stage that version on npm and create a GitHub release.
 # npm trusted publishing (OIDC) is used, so no npm token is stored in this repository.
+# Staged versions go live once a maintainer approves them on npmjs.com (2FA).
 
 on:
   push:
@@ -37,13 +38,13 @@ jobs:
       - run: bun run typecheck
       - run: bun run test
 
-      - name: Publish to npm
+      - name: Stage on npm
         run: |
           version=$(node -p "require('./package.json').version")
           if npm view "tuinnel-plus@$version" version >/dev/null 2>&1; then
             echo "tuinnel-plus@$version is already on npm, skipping publish"
           else
-            npm publish --access public --provenance
+            npm stage publish . --access public --provenance
           fi
 
       - name: Create GitHub release

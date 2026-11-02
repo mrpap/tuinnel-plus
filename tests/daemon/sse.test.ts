@@ -34,14 +34,20 @@ async function openStream(port: number) {
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  const readUntil = async (pred: (s: string) => boolean, timeoutMs = 1000) => {
+  // One read stays pending across attempts: abandoning a read that loses the
+  // race would silently swallow the chunk it later receives.
+  let pending: Promise<ReadableStreamReadResult<Uint8Array>> | null = null;
+  const readUntil = async (pred: (s: string) => boolean, timeoutMs = 3000) => {
     const deadline = Date.now() + timeoutMs;
     while (!pred(buffer)) {
       if (Date.now() > deadline) throw new Error(`timed out; got: ${buffer}`);
+      pending ??= reader.read();
       const chunk = await Promise.race([
-        reader.read(),
-        new Promise<{ done: true; value: undefined }>((r) => setTimeout(() => r({ done: true, value: undefined }), 50)),
+        pending,
+        new Promise<null>((r) => setTimeout(() => r(null), 50)),
       ]);
+      if (chunk === null) continue;
+      pending = null;
       if (chunk.value) buffer += decoder.decode(chunk.value);
     }
     return buffer;

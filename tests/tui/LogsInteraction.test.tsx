@@ -4,8 +4,7 @@ import { render } from 'ink-testing-library';
 import { App } from '../../src/tui/App.js';
 import type { TunnelRuntime, ConnectionEvent } from '../../src/types.js';
 import { EventEmitter } from 'events';
-
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+import { press } from './wait.js';
 
 // Key escape sequences understood by ink's input parser
 const UP = '\x1B[A';
@@ -76,10 +75,8 @@ describe('Logs tab interaction', () => {
   test('/ opens the filter prompt on the logs tab', async () => {
     const { lastFrame, stdin } = renderApp([makeEvent('alpha event'), makeEvent('beta event')]);
 
-    stdin.write('2'); // logs tab
-    await delay(50);
-    stdin.write('/');
-    await delay(50);
+    await press({ stdin, lastFrame }, '2'); // logs tab
+    await press({ stdin, lastFrame }, '/');
 
     const frame = lastFrame();
     expect(frame).toContain('Filter:');
@@ -89,12 +86,9 @@ describe('Logs tab interaction', () => {
   test('typing after / filters the log events live', async () => {
     const { lastFrame, stdin } = renderApp([makeEvent('alpha event'), makeEvent('beta event')]);
 
-    stdin.write('2');
-    await delay(50);
-    stdin.write('/');
-    await delay(50);
-    stdin.write('alpha');
-    await delay(50);
+    await press({ stdin, lastFrame }, '2');
+    await press({ stdin, lastFrame }, '/');
+    await press({ stdin, lastFrame }, 'alpha');
 
     const frame = lastFrame();
     expect(frame).toContain('alpha event');
@@ -104,16 +98,12 @@ describe('Logs tab interaction', () => {
   test('Esc clears an active log filter', async () => {
     const { lastFrame, stdin } = renderApp([makeEvent('alpha event'), makeEvent('beta event')]);
 
-    stdin.write('2');
-    await delay(50);
-    stdin.write('/');
-    await delay(50);
-    stdin.write('alpha');
-    await delay(50);
+    await press({ stdin, lastFrame }, '2');
+    await press({ stdin, lastFrame }, '/');
+    await press({ stdin, lastFrame }, 'alpha');
     expect(lastFrame()).not.toContain('beta event');
 
-    stdin.write(ESC);
-    await delay(50);
+    await press({ stdin, lastFrame }, ESC);
 
     const frame = lastFrame();
     expect(frame).toContain('alpha event');
@@ -124,12 +114,9 @@ describe('Logs tab interaction', () => {
   test('typing a filter does not trigger global shortcuts (q stays in filter)', async () => {
     const { lastFrame, stdin } = renderApp([makeEvent('quokka event'), makeEvent('beta event')]);
 
-    stdin.write('2');
-    await delay(50);
-    stdin.write('/');
-    await delay(50);
-    stdin.write('q'); // must go to the filter, NOT open the quit confirmation
-    await delay(50);
+    await press({ stdin, lastFrame }, '2');
+    await press({ stdin, lastFrame }, '/');
+    await press({ stdin, lastFrame }, 'q'); // must go to the filter, NOT open the quit confirmation
 
     const frame = lastFrame();
     expect(frame).not.toContain('Stop all tunnels and exit');
@@ -139,37 +126,28 @@ describe('Logs tab interaction', () => {
   test('Backspace edits the filter text', async () => {
     const { lastFrame, stdin } = renderApp([makeEvent('alpha event'), makeEvent('beta event')]);
 
-    stdin.write('2');
-    await delay(50);
-    stdin.write('/');
-    await delay(50);
-    stdin.write('alphaz'); // no event matches "alphaz"
-    await delay(50);
+    await press({ stdin, lastFrame }, '2');
+    await press({ stdin, lastFrame }, '/');
+    await press({ stdin, lastFrame }, 'alphaz'); // no event matches "alphaz"
     expect(lastFrame()).toContain('No events matching');
 
-    stdin.write('\x7f'); // Backspace -> "alpha"
-    await delay(50);
+    await press({ stdin, lastFrame }, '\x7f'); // Backspace -> "alpha"
     expect(lastFrame()).toContain('alpha event');
   });
 
   test('Enter applies the filter and re-enables global shortcuts', async () => {
     const { lastFrame, stdin } = renderApp([makeEvent('alpha event'), makeEvent('beta event')]);
 
-    stdin.write('2');
-    await delay(50);
-    stdin.write('/');
-    await delay(50);
-    stdin.write('alpha');
-    await delay(50);
-    stdin.write('\r'); // Enter confirms, exits editing
-    await delay(50);
+    await press({ stdin, lastFrame }, '2');
+    await press({ stdin, lastFrame }, '/');
+    await press({ stdin, lastFrame }, 'alpha');
+    await press({ stdin, lastFrame }, '\r'); // Enter confirms, exits editing
     // filter is retained
     expect(lastFrame()).toContain('Filter:');
     expect(lastFrame()).not.toContain('beta event');
 
     // shortcuts work again (q is no longer captured by the filter box)
-    stdin.write('q');
-    await delay(50);
+    await press({ stdin, lastFrame }, 'q');
     expect(lastFrame()).toContain('Tunnels keep running in the background service');
   });
 
@@ -177,10 +155,8 @@ describe('Logs tab interaction', () => {
     const events = Array.from({ length: 20 }, (_, i) => makeEvent(`event-${String(i).padStart(2, '0')}`));
     const { lastFrame, stdin } = renderApp(events);
 
-    stdin.write('2');
-    await delay(50);
-    stdin.write(UP);
-    await delay(50);
+    await press({ stdin, lastFrame }, '2');
+    await press({ stdin, lastFrame }, UP);
 
     expect(lastFrame()).toContain('PAUSED');
   });
@@ -189,14 +165,11 @@ describe('Logs tab interaction', () => {
     const events = Array.from({ length: 20 }, (_, i) => makeEvent(`event-${String(i).padStart(2, '0')}`));
     const { lastFrame, stdin } = renderApp(events);
 
-    stdin.write('2');
-    await delay(50);
-    stdin.write(UP);
-    await delay(50);
+    await press({ stdin, lastFrame }, '2');
+    await press({ stdin, lastFrame }, UP);
     expect(lastFrame()).toContain('PAUSED');
 
-    stdin.write(ESC);
-    await delay(50);
+    await press({ stdin, lastFrame }, ESC);
     expect(lastFrame()).not.toContain('PAUSED');
   });
 
@@ -204,13 +177,11 @@ describe('Logs tab interaction', () => {
     const events = Array.from({ length: 20 }, (_, i) => makeEvent(`event-${String(i).padStart(2, '0')}`));
     const { lastFrame, stdin } = renderApp(events);
 
-    stdin.write('2');
-    await delay(50);
+    await press({ stdin, lastFrame }, '2');
     // default view shows the last 15 events; event-00 is off-screen
     expect(lastFrame()).not.toContain('event-00');
 
-    stdin.write(PAGE_UP);
-    await delay(50);
+    await press({ stdin, lastFrame }, PAGE_UP);
     expect(lastFrame()).toContain('event-00');
   });
 });

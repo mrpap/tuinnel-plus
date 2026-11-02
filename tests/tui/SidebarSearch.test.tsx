@@ -4,8 +4,7 @@ import { render } from 'ink-testing-library';
 import { App } from '../../src/tui/App.js';
 import type { TunnelRuntime } from '../../src/types.js';
 import { EventEmitter } from 'events';
-
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+import { press } from './wait.js';
 
 const UP = '\x1B[A';
 const DOWN = '\x1B[B';
@@ -65,8 +64,7 @@ describe('Sidebar fuzzy search', () => {
   test('/ opens the sidebar search box (sidebar focused by default)', async () => {
     const { lastFrame, stdin } = renderApp(['angular', 'vite', 'api', 'admin']);
 
-    stdin.write('/');
-    await delay(50);
+    await press({ stdin, lastFrame }, '/');
 
     expect(lastFrame()).toContain('Search:');
   });
@@ -74,10 +72,8 @@ describe('Sidebar fuzzy search', () => {
   test('typing narrows the tunnel list to matches', async () => {
     const { lastFrame, stdin } = renderApp(['angular', 'vite', 'api', 'admin']);
 
-    stdin.write('/');
-    await delay(50);
-    stdin.write('vi');
-    await delay(50);
+    await press({ stdin, lastFrame }, '/');
+    await press({ stdin, lastFrame }, 'vi');
 
     const frame = lastFrame();
     expect(frame).toContain('vite');
@@ -88,12 +84,9 @@ describe('Sidebar fuzzy search', () => {
   test('Enter jumps to the highlighted match and restores the full list', async () => {
     const { lastFrame, stdin } = renderApp(['angular', 'vite', 'api', 'admin']);
 
-    stdin.write('/');
-    await delay(50);
-    stdin.write('vi');
-    await delay(50);
-    stdin.write('\r'); // Enter
-    await delay(50);
+    await press({ stdin, lastFrame }, '/');
+    await press({ stdin, lastFrame }, 'vi');
+    await press({ stdin, lastFrame }, '\r'); // Enter
 
     const frame = lastFrame();
     expect(frame).not.toContain('Search:');
@@ -105,16 +98,13 @@ describe('Sidebar fuzzy search', () => {
     const { lastFrame, stdin } = renderApp(['angular', 'vite', 'api', 'admin']);
 
     // angular is selected first by default
-    stdin.write('/');
-    await delay(50);
-    stdin.write('vi'); // selection follows to vite
-    await delay(50);
+    await press({ stdin, lastFrame }, '/');
+    await press({ stdin, lastFrame }, 'vi'); // selection follows to vite
     // selection actually moved away from angular while searching
     expect(lastFrame()).toContain('vite.example.com');
     expect(lastFrame()).not.toContain('angular.example.com');
 
-    stdin.write(ESC);
-    await delay(50);
+    await press({ stdin, lastFrame }, ESC);
 
     const frame = lastFrame();
     expect(frame).not.toContain('Search:');
@@ -127,14 +117,10 @@ describe('Sidebar fuzzy search', () => {
     // search navigation must skip it and land on apex.
     const { lastFrame, stdin } = renderApp(['api', 'zeta', 'apex', 'apollo']);
 
-    stdin.write('/');
-    await delay(50);
-    stdin.write('ap'); // matches api, apex, apollo; selection -> api
-    await delay(50);
-    stdin.write(DOWN); // within matches: api -> apex (not zeta)
-    await delay(50);
-    stdin.write('\r'); // jump
-    await delay(50);
+    await press({ stdin, lastFrame }, '/');
+    await press({ stdin, lastFrame }, 'ap'); // matches api, apex, apollo; selection -> api
+    await press({ stdin, lastFrame }, DOWN); // within matches: api -> apex (not zeta)
+    await press({ stdin, lastFrame }, '\r'); // jump
 
     expect(lastFrame()).toContain('apex.example.com');
     expect(lastFrame()).not.toContain('zeta.example.com');

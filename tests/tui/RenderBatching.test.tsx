@@ -4,6 +4,7 @@ import { render } from 'ink-testing-library';
 import { App } from '../../src/tui/App.js';
 import type { TunnelRuntime } from '../../src/types.js';
 import { EventEmitter } from 'events';
+import { press } from './wait.js';
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -57,8 +58,7 @@ describe('stateChange render coalescing', () => {
       />
     );
 
-    stdin.write('2'); // logs tab
-    await delay(50);
+    await press({ stdin, lastFrame }, '2'); // logs tab
     expect(lastFrame()).toContain('Waiting for connections');
 
     // Simulate cloudflared emitting a log line: mutate runtime in place + emit,

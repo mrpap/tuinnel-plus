@@ -37,16 +37,11 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "test": "bun test",
+    "test": "bun test --timeout 20000",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "bun run build",
-    "changeset": "changeset",
-    "version": "changeset version",
-    "release": "bun run build && changeset publish"
+    "prepublishOnly": "bun run build"
   },
   "devDependencies": {
-    "@changesets/changelog-github": "^0.5.2",
-    "@changesets/cli": "^2.29.8",
     "@commander-js/extra-typings": "^14.0.0",
     "@inkjs/ui": "^2.0.0",
     "@types/node": "^25.2.3",

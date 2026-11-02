@@ -1,0 +1,64 @@
+{
+  "name": "tuinnel-plus",
+  "version": "0.1.0",
+  "description": "Manage Cloudflare Tunnels from a terminal dashboard, a web UI, or the command line",
+  "license": "MIT",
+  "author": "mrpap (https://github.com/mrpap)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mrpap/tuinnel-plus.git"
+  },
+  "homepage": "https://github.com/mrpap/tuinnel-plus#readme",
+  "bugs": {
+    "url": "https://github.com/mrpap/tuinnel-plus/issues"
+  },
+  "keywords": [
+    "cloudflare",
+    "tunnel",
+    "cloudflared",
+    "cli",
+    "tui",
+    "web-ui",
+    "dashboard",
+    "daemon",
+    "launchd"
+  ],
+  "type": "module",
+  "bin": {
+    "tuinnel-plus": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "bun run build && changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/changelog-github": "^0.5.2",
+    "@changesets/cli": "^2.29.8",
+    "@commander-js/extra-typings": "^14.0.0",
+    "@inkjs/ui": "^2.0.0",
+    "@types/node": "^25.2.3",
+    "@types/react": "^19.2.13",
+    "chalk": "^5.4.0",
+    "cli-table3": "^0.6.5",
+    "commander": "^14.0.3",
+    "ink": "^6.7.0",
+    "ink-testing-library": "^4.0.0",
+    "react": "^19.2.4",
+    "tsup": "^8.5.1",
+    "typescript": "^5.7.0",
+    "zod": "^3.24.0"
+  }
+}

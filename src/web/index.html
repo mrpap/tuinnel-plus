@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>tuinnel-plus</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script>
+    // Apply the saved theme and accent before first paint so the page doesn't flash.
+    try {
+      const t = localStorage.getItem('tp-theme');
+      if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+      const hue = Number(localStorage.getItem('tp-accent'));
+      if (localStorage.getItem('tp-accent') !== null && hue >= 0 && hue < 360) document.documentElement.style.setProperty('--hue', hue);
+    } catch {}
+  </script>
+</head>
+<body>
+  <!-- Auth: first-run setup or login -->
+  <main id="auth" class="auth" hidden>
+    <span class="logo auth-logo" data-logo="logo" role="img" aria-label="tuinnel-plus"></span>
+    <form id="auth-form" class="auth-card" novalidate>
+      <h1 id="auth-title">Sign in</h1>
+      <p id="auth-hint" class="muted"></p>
+      <label class="field">
+        <span>Password</span>
+        <input id="auth-password" class="input" type="password" autocomplete="current-password" required>
+      </label>
+      <label class="field" id="auth-confirm-field" hidden>
+        <span>Repeat password</span>
+        <input id="auth-confirm" class="input" type="password" autocomplete="new-password">
+      </label>
+      <p id="auth-error" class="form-error" role="alert"></p>
+      <button class="btn primary" type="submit" id="auth-submit">Sign in</button>
+    </form>
+    <p id="auth-forgot" class="auth-note">Forgot it? Run <code>tuinnel-plus password set</code> on the computer running tuinnel-plus.</p>
+  </main>
+
+  <div id="app" class="app" hidden>
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="logo" data-logo="logo" role="img" aria-label="tuinnel-plus"></span>
+        <span id="live" class="live"><span class="live-dot"></span><span id="live-label">Connecting…</span></span>
+      </div>
+      <nav id="nav" class="nav" aria-label="Main"></nav>
+      <div class="side-head">
+        <span class="eyebrow">Tunnels</span>
+        <span id="side-count" class="mono muted small"></span>
+      </div>
+      <div class="search-wrap">
+        <span data-icon="search"></span>
+        <input id="search" class="input search" type="search" placeholder="Search tunnels" aria-label="Search tunnels">
+      </div>
+      <ul id="side-list" class="side-list" aria-label="Tunnels"></ul>
+      <div class="side-foot">
+        <button id="theme-btn" class="theme-btn" type="button"></button>
+        <span id="version" class="mono muted small version"></span>
+        <button id="signout-btn" class="icon-btn" type="button" title="Sign out" aria-label="Sign out" data-icon="logout"></button>
+      </div>
+    </aside>
+
+    <div class="content">
+      <header class="mobilebar">
+        <span class="logo" data-logo="logo" role="img" aria-label="tuinnel-plus"></span>
+        <span id="m-live" class="live-dot"></span>
+        <span class="spacer"></span>
+        <nav id="m-nav" class="m-nav" aria-label="Main"></nav>
+        <button id="m-theme" class="icon-btn big" type="button" title="Theme" aria-label="Theme"></button>
+      </header>
+      <main id="view" class="view"></main>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

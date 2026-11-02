@@ -1,6 +1,6 @@
 {
   "name": "tuinnel-plus",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Manage Cloudflare Tunnels from a terminal dashboard, a web UI, or the command line",
   "license": "MIT",
   "author": "mrpap (https://github.com/mrpap)",

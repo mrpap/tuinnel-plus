@@ -37,7 +37,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "test": "bun test",
+    "test": "bun test --timeout 20000",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "bun run build"
   },

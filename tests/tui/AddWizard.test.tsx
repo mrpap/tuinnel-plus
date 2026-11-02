@@ -2,7 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import React from 'react';
 import { render } from 'ink-testing-library';
 import { AddWizard } from '../../src/tui/AddWizard.js';
-import { press } from './wait.js';
+import { press, waitFor } from './wait.js';
 
 const ENTER = '\r';
 const DOWN = '\x1B[B';
@@ -29,7 +29,7 @@ describe('AddWizard', () => {
     await press({ stdin, lastFrame }, ENTER); // accept suggested subdomain
     await press({ stdin, lastFrame }, ENTER); // confirm zone (unchanged — default zone is first in the list)
 
-    expect(submitted).not.toBeNull();
+    await waitFor(() => expect(submitted).not.toBeNull());
     expect(submitted?.zone).toBe('example.com');
     expect(submitted?.port).toBe(3000);
   });
@@ -51,7 +51,7 @@ describe('AddWizard', () => {
     await press({ stdin, lastFrame }, DOWN);  // move to example.org
     await press({ stdin, lastFrame }, ENTER); // confirm zone (changed)
 
-    expect(submitted).not.toBeNull();
+    await waitFor(() => expect(submitted).not.toBeNull());
     expect(submitted?.zone).toBe('example.org');
     expect(submitted?.port).toBe(3000);
   });

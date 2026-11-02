@@ -4,6 +4,8 @@ Manage [Cloudflare Tunnels](https://developers.cloudflare.com/cloudflare-one/con
 
 Based on [tuinnel](https://github.com/NickDunas/tuinnel) by Nick Dunas.
 
+![The tuinnel-plus web UI: tunnel overview, starting a tunnel, live logs and metrics, and switching accent colour and theme](https://raw.githubusercontent.com/mrpap/tuinnel-plus/main/docs/demo.gif)
+
 ```
 $ tuinnel-plus
 

@@ -57,12 +57,21 @@ export function readDescriptor(stateDir: string): DaemonDescriptor | null {
   }
 }
 
+/** A process's command line from `ps`, or null when it can't be read. */
+export function processCommand(pid: number): string | null {
+  try {
+    return execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf-8', timeout: 2000 });
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Whether `pid` is a running tuinnel-plus daemon. A bare liveness check isn't
  * enough: after a crash or power loss the old pid is often reused by another
  * process at boot, and honouring that stale lock would keep every tunnel down.
  */
-export function isDaemonProcess(pid: number): boolean {
+export function isDaemonProcess(pid: number, commandOf: (pid: number) => string | null = processCommand): boolean {
   if (pid === process.pid) return true; // this process already took the lock
   try {
     process.kill(pid, 0);
@@ -70,12 +79,8 @@ export function isDaemonProcess(pid: number): boolean {
     // ESRCH: gone. EPERM: another user's process — the daemon runs as us.
     return false;
   }
-  let command: string;
-  try {
-    command = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf-8', timeout: 2000 });
-  } catch {
-    return true; // can't tell — keep honouring the lock
-  }
+  const command = commandOf(pid);
+  if (command === null) return true; // can't tell — keep honouring the lock
   return /\bserve\b/.test(command) && /tuinnel|index\.(js|ts)/.test(command);
 }
 

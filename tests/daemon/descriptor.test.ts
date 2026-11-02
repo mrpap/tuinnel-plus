@@ -2,9 +2,9 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync, statSync, writeFileSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { spawn, spawnSync, type ChildProcess } from 'child_process';
+import { spawnSync } from 'child_process';
 import {
-  daemonPaths, writeDescriptor, readDescriptor, acquireLock, releaseLock, DaemonRunningError, isDaemonProcess,
+  daemonPaths, writeDescriptor, readDescriptor, acquireLock, releaseLock, DaemonRunningError, isDaemonProcess, processCommand,
   type DaemonDescriptor,
 } from '../../src/daemon/descriptor.js';
 
@@ -65,39 +65,42 @@ describe('daemon descriptor', () => {
   });
 
   describe('lock holder identity (pid reuse after a crash)', () => {
-    let child: ChildProcess | null = null;
-    afterEach(() => { child?.kill(); child = null; });
-
-    // `; true` keeps sh alive (no exec), so ps shows these argv words. On Linux
-    // spawn returns before the exec, so wait until ps shows the new command line.
-    const live = (...argv: string[]) => {
-      child = spawn('/bin/sh', ['-c', 'sleep 5; true', ...argv], { stdio: 'ignore' });
-      const pid = child.pid!;
-      const deadline = Date.now() + 3000;
-      while (Date.now() < deadline) {
-        const cmd = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf-8' }).stdout;
-        if (cmd.includes('sleep 5')) break;
-      }
-      return pid;
-    };
+    // The parent process (the shell or runner that started the tests) is a pid
+    // that is certainly alive; its command line is supplied by the test.
+    const alive = process.ppid;
+    const as = (command: string | null) => () => command;
 
     test('a live pid that is not a tuinnel daemon does not hold the lock', () => {
-      expect(isDaemonProcess(live('unrelated', 'app'))).toBe(false);
+      expect(isDaemonProcess(alive, as('/usr/sbin/cupsd -l'))).toBe(false);
+      expect(isDaemonProcess(alive, as('node /srv/app/server.js serve'))).toBe(false);
     });
 
     test('a live tuinnel-plus serve process holds the lock', () => {
-      const pid = live('tuinnel-plus', 'serve');
-      const command = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf-8' }).stdout.trim();
-      expect({ command, held: isDaemonProcess(pid) }).toEqual({ command, held: true });
+      expect(isDaemonProcess(alive, as('node /usr/local/bin/tuinnel-plus serve'))).toBe(true);
+      expect(isDaemonProcess(alive, as('/usr/bin/node /opt/tp/dist/index.js serve'))).toBe(true);
+    });
+
+    test('a pid whose command line cannot be read still counts as held', () => {
+      expect(isDaemonProcess(alive, as(null))).toBe(true);
+    });
+
+    test('a pid that no longer exists does not hold the lock', () => {
+      const gone = spawnSync('true').pid;
+      expect(isDaemonProcess(gone, as('tuinnel-plus serve'))).toBe(false);
     });
 
     test('a lock already held by this process counts as held', () => {
       expect(isDaemonProcess(process.pid)).toBe(true);
     });
 
+    test('processCommand reads a real command line', () => {
+      expect(processCommand(process.pid)).toContain('bun');
+    });
+
     test('stale lock whose pid was reused by another process is taken over', () => {
-      acquireLock(dir, live('reused', 'pid'));
-      acquireLock(dir, 222);
+      const reused = (pid: number) => isDaemonProcess(pid, as('/usr/sbin/cupsd -l'));
+      acquireLock(dir, alive, reused);
+      acquireLock(dir, 222, reused);
       expect(readFileSync(daemonPaths(dir).lock, 'utf-8').trim()).toBe('222');
     });
   });

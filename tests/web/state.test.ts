@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 // @ts-expect-error — plain browser ES module, no type declarations
 import {
-  initialState, applySnapshot, applyEvent, applyLogs, visibleTunnels, tunnelCounts, stateTone, stateLabel, formatUptime,
+  initialState, applySnapshot, applyEvent, applyLogs, needsLogHistory, visibleTunnels, tunnelCounts, stateTone, stateLabel, formatUptime,
   parseRoute, routeHash, validateTunnelForm, nextTheme, themeLabel,
   oklchToHex, accentHex, ACCENT_PRESETS, DEFAULT_ACCENT_HUE, brandSvg,
 } from '../../src/web/state.js';
@@ -50,6 +50,25 @@ describe('web state', () => {
     expect(s.logs.app.length).toBe(1000);
     expect(s.logs.app[0].message).toBe('l5');
     expect(s.logs.app[999].message).toBe('l1004');
+  });
+
+  test('a live log line does not count as loaded history', () => {
+    let s = applySnapshot(initialState(), [wire('app')]);
+    expect(needsLogHistory(s, 'app')).toBe(true);
+    s = applyEvent(s, 'log', { name: 'app', event: ev('live') });
+    expect(needsLogHistory(s, 'app')).toBe(true);
+    s = applyLogs(s, 'app', [ev('old'), ev('live')]);
+    expect(needsLogHistory(s, 'app')).toBe(false);
+  });
+
+  test('loaded history survives a snapshot but not removal', () => {
+    let s = applySnapshot(initialState(), [wire('a'), wire('b')]);
+    s = applyLogs(applyLogs(s, 'a', []), 'b', []);
+    s = applySnapshot(s, [wire('a'), wire('b')]);
+    expect(needsLogHistory(s, 'a')).toBe(false);
+    s = applyEvent(s, 'removed', { name: 'b' });
+    s = applyEvent(s, 'added', { name: 'b', tunnel: wire('b') });
+    expect(needsLogHistory(s, 'b')).toBe(true);
   });
 
   test('added tunnel appears without changing the selection', () => {

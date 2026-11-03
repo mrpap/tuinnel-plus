@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3
+
+- Fix: buttons and menu entries in the web UI sometimes needed a second click while tunnels were busy
+- Fix: a tunnel's log history did not load if a live log line had arrived before the Logs tab was opened
+- The README shows a short demo of the web UI
+
 ## 0.1.2
 
 - Fix: signing in to the web UI through remote access (self-expose) was refused as a cross-site request, and so was every change made after signing in remotely

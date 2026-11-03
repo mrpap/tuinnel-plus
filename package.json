@@ -43,6 +43,7 @@
   },
   "devDependencies": {
     "@commander-js/extra-typings": "^14.0.0",
+    "@happy-dom/global-registrator": "^21.0.4",
     "@inkjs/ui": "^2.0.0",
     "@types/node": "^25.2.3",
     "@types/react": "^19.2.13",

@@ -4,6 +4,7 @@ import {
   ACCENT_PRESETS, DEFAULT_ACCENT_HUE, accentHex, brandSvg,
 } from './state.js';
 import { ICONS } from './icons.js';
+import { h, fill, patch } from './dom.js';
 import { ICON, LOGO } from './brand.js';
 
 const PROTOCOLS = ['http', 'https'];
@@ -13,27 +14,6 @@ const MIN_PASSWORD = 8;
 
 const $ = (id) => document.getElementById(id);
 const SVG_NS = 'http://www.w3.org/2000/svg';
-
-/** Build an element. Children may be strings (inserted as text, never HTML) or nodes. */
-function h(tag, attrs = {}, ...children) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (v === undefined || v === null || v === false) continue;
-    if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
-    else if (k === 'class') el.className = v;
-    else el.setAttribute(k, v === true ? '' : v);
-  }
-  for (const c of children.flat()) {
-    if (c === null || c === undefined || c === false) continue;
-    el.append(c instanceof Node ? c : document.createTextNode(String(c)));
-  }
-  return el;
-}
-
-/** replaceChildren that skips null/false (the DOM would print them as text). */
-function fill(el, ...children) {
-  el.replaceChildren(...children.flat().filter((c) => c !== null && c !== undefined && c !== false));
-}
 
 function icon(name, extraClass = '') {
   const svg = document.createElementNS(SVG_NS, 'svg');
@@ -370,10 +350,10 @@ function navCurrent(view) {
 }
 
 function renderChrome() {
-  fill($('nav'), NAV.map((n) => h('button', {
+  patch($('nav'), NAV.map((n) => h('button', {
     type: 'button', 'aria-current': navCurrent(n.view) ? 'page' : null, onclick: () => go({ view: n.view }),
   }, icon(n.icon), n.label)));
-  fill($('m-nav'), NAV.map((n) => h('button', {
+  patch($('m-nav'), NAV.map((n) => h('button', {
     type: 'button', title: n.label, 'aria-label': n.label,
     'aria-current': navCurrent(n.view) ? 'page' : null, onclick: () => go({ view: n.view }),
   }, icon(n.icon))));
@@ -381,7 +361,7 @@ function renderChrome() {
   const counts = tunnelCounts(state);
   $('side-count').textContent = `${counts.running}/${counts.total}`;
   const items = visibleTunnels({ ...state, show: 'all' });
-  fill($('side-list'), items.length ? items.map((t) => h('li', {
+  patch($('side-list'), items.length ? items.map((t) => h('li', {
     class: 'side-item',
     tabindex: '0',
     'aria-current': route.view === 'tunnel' && route.name === t.name ? 'page' : null,
@@ -495,19 +475,19 @@ function overviewView(root) {
       const counts = tunnelCounts(state);
       const zoneCount = new Set(Object.values(state.tunnels).map((t) => t.config.zone)).size;
       sub.textContent = `${counts.total} tunnel${counts.total === 1 ? '' : 's'} across ${zoneCount} zone${zoneCount === 1 ? '' : 's'}`;
-      fill(stats,
+      patch(stats,
         stat('bolt', 'ok', 'Running', counts.running),
         stat('pause_circle', 'muted', 'Stopped', counts.stopped),
         stat('lan', 'accent', 'Total', counts.total),
         stat('public', 'accent', 'Remote access', remoteAccess ? (remoteAccess.enabled ? 'On' : 'Off') : '—'));
-      fill(filters, seg([
+      patch(filters, seg([
         { value: 'all', label: 'All', count: counts.total },
         { value: 'running', label: 'Running', count: counts.running },
         { value: 'stopped', label: 'Stopped', count: counts.stopped },
       ], state.show, (show) => setState({ ...state, show })));
 
       const list = visibleTunnels(state);
-      fill(rows, list.length ? list.map(tunnelRow)
+      patch(rows, list.length ? list.map(tunnelRow)
         : h('div', { class: 'empty' }, counts.total ? 'No tunnels match.' : 'No tunnels yet. Add one to get started.'));
     },
   };
@@ -545,6 +525,7 @@ function tunnelView(root) {
   const name = route.name;
   let editing = false;
   let confirmingDelete = false;
+  let deleting = false;
   let logPaused = false;
   let metricsTimer = null;
   let copiedTimer = null;
@@ -695,7 +676,7 @@ function tunnelView(root) {
   function renderLogs() {
     const t = state.tunnels[name];
     if (!t) return;
-    fill(logState, h('span', { class: `dot ${stateTone(t.state)}` }), stateLabel(t.state));
+    patch(logState, h('span', { class: `dot ${stateTone(t.state)}` }), stateLabel(t.state));
     const q = logFilter.value.trim().toLowerCase();
     const lines = (state.logs[name] ?? []).filter((e) => !q || e.message.toLowerCase().includes(q));
     fill(logView, lines.length
@@ -775,12 +756,12 @@ function tunnelView(root) {
   function renderHead(t) {
     const tone = stateTone(t.state);
     pill.className = `status-pill ${tone}`;
-    fill(pill, h('span', { class: `dot ${tone}` }), stateLabel(t.state));
+    patch(pill, h('span', { class: `dot ${tone}` }), stateLabel(t.state));
     urlLink.href = urlOf(t);
     urlLink.textContent = urlOf(t);
     const disabled = busy.has(name);
     const running = isRunning(t);
-    fill(actions,
+    patch(actions,
       t.system ? h('span', { class: 'tag accent' }, 'Serves this dashboard') : null,
       t.system ? null : h('button', { class: 'btn', type: 'button', disabled, onclick: () => startStop(t) },
         icon(running ? 'stop' : 'play_arrow'), running ? 'Stop' : 'Start'),
@@ -792,35 +773,37 @@ function tunnelView(root) {
       }, icon('delete'), 'Delete'));
   }
 
+  async function deleteTunnel() {
+    deleting = true;
+    render();
+    try {
+      const res = await api(tunnelPath(name), { method: 'DELETE' });
+      state = applyEvent(state, 'removed', { name });
+      if (res.warnings.length) toast(`Removed, but Cloudflare cleanup was incomplete: ${res.warnings.join('; ')}`, 'error');
+      else toast(`Deleted ${name}`);
+      go({ view: 'overview' });
+    } catch (err) {
+      toast(`Delete failed: ${err.message}`, 'error');
+      deleting = false;
+      render();
+    }
+  }
+
   function renderConfirm(t) {
     if (!confirmingDelete) return fill(confirmSlot);
-    const del = h('button', { class: 'btn danger-solid', type: 'button' }, 'Delete tunnel');
-    del.addEventListener('click', async () => {
-      del.disabled = true;
-      try {
-        const res = await api(tunnelPath(name), { method: 'DELETE' });
-        state = applyEvent(state, 'removed', { name });
-        if (res.warnings.length) toast(`Removed, but Cloudflare cleanup was incomplete: ${res.warnings.join('; ')}`, 'error');
-        else toast(`Deleted ${name}`);
-        go({ view: 'overview' });
-      } catch (err) {
-        toast(`Delete failed: ${err.message}`, 'error');
-        del.disabled = false;
-      }
-    });
-    fill(confirmSlot, h('div', { class: 'banner danger', role: 'alert' },
+    patch(confirmSlot, h('div', { class: 'banner danger', role: 'alert' },
       icon('warning'),
       h('span', { class: 'msg' }, 'Delete ', h('strong', {}, name), '? This stops the tunnel and removes ', h('strong', {}, hostOf(t)),
         ' — its Cloudflare tunnel and DNS record are deleted too.'),
       h('div', { class: 'btns' },
         h('button', { class: 'btn', type: 'button', onclick: () => { confirmingDelete = false; render(); } }, 'Cancel'),
-        del)));
+        h('button', { class: 'btn danger-solid', type: 'button', disabled: deleting, onclick: deleteTunnel }, 'Delete tunnel'))));
   }
 
   function renderTiles(t) {
     const tile = (iconName, label, value) => h('div', { class: 'tile' },
       h('div', { class: 'tile-label' }, icon(iconName), label), h('div', { class: 'tile-value', title: value }, value));
-    fill(tiles,
+    patch(tiles,
       tile('lan', 'Local port', String(t.config.port)),
       tile('http', 'Protocol', t.config.protocol.toUpperCase()),
       tile('schedule', 'Uptime', formatUptime(t.state === 'connected' ? t.connectedAt : 0)),
@@ -995,7 +978,7 @@ function settingsView(root) {
 
   // Appearance
   const themeSlot = h('div', {});
-  const drawTheme = () => fill(themeSlot, seg(
+  const drawTheme = () => patch(themeSlot, seg(
     ['system', 'light', 'dark'].map((v) => ({ value: v, label: themeLabel(v), icon: THEME_ICONS[v] })),
     theme, (v) => setTheme(v), 'wide'));
 

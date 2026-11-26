@@ -16,7 +16,7 @@ import { createGuard } from '../daemon/guard.js';
 import { resolveAssetsDir } from '../daemon/static.js';
 import { SelfExpose, type SelfExposeStatus } from '../daemon/self-expose.js';
 import { RateLimiter, SessionStore } from '../daemon/auth.js';
-import { VERSION } from '../version.js';
+import { COMMIT, VERSION } from '../version.js';
 import { logger } from '../utils/logger.js';
 
 export interface StartDaemonOptions {
@@ -118,7 +118,7 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
       scrape: scrapeMetrics,
       statusInfo: () => {
         const se = selfExpose.status();
-        return { version: VERSION, startedAt, selfExpose: { enabled: se.enabled, url: se.url } };
+        return { version: VERSION, commit: COMMIT, startedAt, selfExpose: { enabled: se.enabled, url: se.url } };
       },
     });
 

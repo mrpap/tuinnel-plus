@@ -27,7 +27,7 @@ async function boot(backend: FakeBackend, overrides: Partial<DaemonDeps> = {}) {
     },
     reload: async () => {},
     scrape: async () => METRICS,
-    statusInfo: () => ({ version: '0.1.0', startedAt: Date.now() - 1000, selfExpose: { enabled: false, url: null } }),
+    statusInfo: () => ({ version: '0.1.0', commit: '702daf5', startedAt: Date.now() - 1000, selfExpose: { enabled: false, url: null } }),
     ...overrides,
   });
   server = made.server;
@@ -57,6 +57,7 @@ describe('meta routes', () => {
     const port = await boot(backend);
     const res = await raw(port, { path: '/api/status' });
     expect(res.json.version).toBe('0.1.0');
+    expect(res.json.commit).toBe('702daf5');
     expect(res.json.uptimeMs).toBeGreaterThanOrEqual(1000);
     expect(res.json.counts).toEqual({ total: 3, running: 1, error: 1 });
     expect(res.json.selfExpose).toEqual({ enabled: false, url: null });

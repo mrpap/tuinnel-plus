@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 // @ts-expect-error — plain browser ES module, no type declarations
 import {
-  initialState, applySnapshot, applyEvent, applyLogs, needsLogHistory, visibleTunnels, tunnelCounts, stateTone, stateLabel, formatUptime,
+  initialState, applySnapshot, applyEvent, applyLogs, needsLogHistory, visibleTunnels, tunnelCounts, stateTone, stateLabel, formatUptime, versionText, versionParts,
   parseRoute, routeHash, validateTunnelForm, nextTheme, themeLabel,
   oklchToHex, accentHex, ACCENT_PRESETS, DEFAULT_ACCENT_HUE, brandSvg,
 } from '../../src/web/state.js';
@@ -119,6 +119,19 @@ describe('web state', () => {
     for (const st of ['error', 'port_down', 'disconnected']) expect(stateTone(st)).toBe('danger');
     expect(stateTone('stopped')).toBe('muted');
     expect(stateLabel('port_down')).toBe('port down');
+  });
+
+  test('versionText shows the build commit when the daemon reports one', () => {
+    expect(versionText(null)).toBe('');
+    expect(versionText({ version: '0.1.4', commit: null })).toBe('v0.1.4');
+    expect(versionText({ version: '0.1.4' })).toBe('v0.1.4');
+    expect(versionText({ version: '0.1.4', commit: '702daf5' })).toBe('v0.1.4 (702daf5)');
+  });
+
+  test('versionParts splits the label so the sidebar can put the commit on its own line', () => {
+    expect(versionParts(null)).toBeNull();
+    expect(versionParts({ version: '0.1.4', commit: null })).toEqual({ version: 'v0.1.4', commit: null });
+    expect(versionParts({ version: '0.1.4', commit: '702daf5-dirty' })).toEqual({ version: 'v0.1.4', commit: '702daf5-dirty' });
   });
 
   test('formatUptime is compact and blank until connected', () => {

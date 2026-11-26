@@ -40,7 +40,7 @@ export interface DaemonDeps {
   listenInfo?: () => { port: number; host: string };
   /** Directory holding the web UI (index.html, app.js, …). */
   assetsDir?: string;
-  statusInfo?: () => { version: string; startedAt: number; selfExpose: { enabled: boolean; url: string | null } };
+  statusInfo?: () => { version: string; commit: string | null; startedAt: number; selfExpose: { enabled: boolean; url: string | null } };
 }
 
 /** An error carrying the HTTP status it should be reported with. */

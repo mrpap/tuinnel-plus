@@ -26,6 +26,7 @@ export function registerMetaRoutes(router: Router, deps: DaemonDeps): void {
     const tunnels = [...service.getAll().values()];
     sendJson(res, 200, {
       version: info.version,
+      commit: info.commit,
       uptimeMs: Date.now() - info.startedAt,
       counts: {
         total: tunnels.length,

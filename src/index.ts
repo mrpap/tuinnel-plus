@@ -2,14 +2,14 @@
 
 import { Command } from 'commander';
 import { setVerbose } from './utils/logger.js';
-import { VERSION } from './version.js';
+import { VERSION_LABEL } from './version.js';
 
 const program = new Command();
 
 program
   .name('tuinnel-plus')
   .description('Manage Cloudflare Tunnels from a terminal dashboard, a web UI, or the command line')
-  .version(VERSION, '-v, --version')
+  .version(VERSION_LABEL, '-v, --version')
   .configureHelp({ showGlobalOptions: true })
   .helpCommand(false);
 

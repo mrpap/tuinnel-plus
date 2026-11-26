@@ -1,7 +1,7 @@
 import {
   initialState, applySnapshot, applyEvent, applyLogs, needsLogHistory, visibleTunnels, tunnelCounts, isRunning,
   stateTone, stateLabel, formatUptime, parseRoute, routeHash, validateTunnelForm, knownTheme, nextTheme, themeLabel,
-  ACCENT_PRESETS, DEFAULT_ACCENT_HUE, accentHex, brandSvg,
+  ACCENT_PRESETS, DEFAULT_ACCENT_HUE, accentHex, brandSvg, versionText, versionParts,
 } from './state.js';
 import { ICONS } from './icons.js';
 import { h, fill, patch } from './dom.js';
@@ -146,7 +146,7 @@ async function zoneNames() {
 let state = initialState();
 let route = parseRoute(location.hash);
 let remoteAccess = null; // { enabled, subdomain, zone, url } from /api/settings
-let version = null;
+let daemonStatus = null; // from /api/status: { version, commit, ... }
 
 const REPO_URL = 'https://github.com/mrpap/tuinnel-plus';
 let events = null;
@@ -289,11 +289,14 @@ async function loadRemoteAccess() {
 
 async function loadVersion() {
   try {
-    version = (await api('/api/status')).version;
+    daemonStatus = await api('/api/status');
   } catch {
-    version = null;
+    daemonStatus = null;
   }
-  $('version').textContent = version ? `v${version}` : '';
+  // A development build puts its commit on a second line; the sidebar is too narrow for one.
+  const parts = versionParts(daemonStatus);
+  fill($('version'), parts?.version ?? '', parts?.commit ? h('span', { class: 'version-commit' }, parts.commit) : null);
+  $('version').title = versionText(daemonStatus);
   if (route.view === 'settings') view.update?.();
 }
 
@@ -1102,7 +1105,7 @@ function settingsView(root) {
   return {
     update() {
       drawTheme();
-      aboutVersion.textContent = version ? `tuinnel-plus v${version}` : '—';
+      aboutVersion.textContent = daemonStatus ? `tuinnel-plus ${versionText(daemonStatus)}` : '—';
     },
   };
 }

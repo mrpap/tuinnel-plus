@@ -9,7 +9,7 @@ import type { Router } from '../router.js';
 const SYSTEM_TUNNEL_MESSAGE = 'This tunnel serves the admin UI; disable self-expose in Settings instead.';
 
 const port = z.number().int().min(1).max(65535);
-const subdomain = z.string().refine((s) => validateSubdomain(s, false) !== null, {
+export const subdomain = z.string().refine((s) => validateSubdomain(s, false) !== null, {
   message: 'Must be lowercase alphanumeric with hyphens, cannot start or end with a hyphen, max 63 characters',
 });
 const protocol = TunnelConfigSchema.shape.protocol.removeDefault().optional();

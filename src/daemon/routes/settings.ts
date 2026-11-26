@@ -5,9 +5,15 @@ import { HttpError, sendJson, type DaemonDeps } from '../server.js';
 import type { Router } from '../router.js';
 import { webSettings } from '../../config/web.js';
 import { WebConfigSchema } from '../../config/schema.js';
+import { subdomain } from './tunnels.js';
 
 const SelfExposeBody = z.discriminatedUnion('enabled', [
-  z.object({ enabled: z.literal(true), subdomain: z.string().min(1), zone: z.string().min(1) }),
+  z.object({
+    enabled: z.literal(true),
+    // Same rule as any tunnel's subdomain, after the trimming and lowercasing the route always did
+    subdomain: z.preprocess((v) => (typeof v === 'string' ? v.trim().toLowerCase() : v), subdomain),
+    zone: z.string().min(1),
+  }),
   z.object({ enabled: z.literal(false) }),
 ]);
 
@@ -44,7 +50,7 @@ export function registerSettingsRoutes(router: Router, deps: DaemonDeps): void {
 
   router.add('PUT', '/api/settings/self-expose', async ({ res, body }) => {
     const input = SelfExposeBody.parse(await body());
-    if (input.enabled) await selfExpose().enable(input.subdomain.trim().toLowerCase(), input.zone.trim());
+    if (input.enabled) await selfExpose().enable(input.subdomain, input.zone.trim());
     else await selfExpose().disable();
     sendJson(res, 200, selfExpose().status());
   });

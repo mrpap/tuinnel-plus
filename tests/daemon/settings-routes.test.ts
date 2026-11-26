@@ -143,3 +143,43 @@ describe('allowedHostsFor', () => {
     expect(on).toContain('admin.example.com');
   });
 });
+
+describe('admin UI subdomain checks', () => {
+  const put = (port: number, body: unknown) =>
+    raw(port, { method: 'PUT', path: '/api/settings/self-expose', headers: bearer, body });
+
+  test('rejects an invalid subdomain like tunnel subdomains, and creates nothing', async () => {
+    const { port, backend, store } = await boot();
+    const res = await put(port, { enabled: true, subdomain: 'bad_name!', zone: 'example.com' });
+    expect(res.status).toBe(400);
+    expect(res.json.error).toContain('lowercase alphanumeric with hyphens');
+    expect(backend.calls).not.toContain('create');
+    expect(store.current.web?.selfExpose).toBeUndefined();
+  });
+
+  test('still accepts mixed case and surrounding spaces', async () => {
+    const { port, store } = await boot();
+    const res = await put(port, { enabled: true, subdomain: ' Admin ', zone: 'example.com' });
+    expect(res.status).toBe(200);
+    expect(store.current.web?.selfExpose?.subdomain).toBe('admin');
+  });
+
+  test('rejects a zone that is not in the account and leaves settings unchanged', async () => {
+    const backend = new FakeBackend();
+    backend.failWith.create = new Error('Zone "nope.com" not found in your Cloudflare account.');
+    const { port } = await boot(backend);
+    const res = await put(port, { enabled: true, subdomain: 'admin', zone: 'nope.com' });
+    expect(res.status).toBe(400);
+    const settings = await raw(port, { path: '/api/settings', headers: bearer });
+    expect(settings.json.selfExpose.enabled).toBe(false);
+  });
+
+  test('re-saving unchanged settings is still a no-op', async () => {
+    const { port, backend } = await boot();
+    await put(port, { enabled: true, subdomain: 'admin', zone: 'example.com' });
+    const creates = backend.calls.filter((c) => c === 'create').length;
+    const res = await put(port, { enabled: true, subdomain: 'admin', zone: 'example.com' });
+    expect(res.status).toBe(200);
+    expect(backend.calls.filter((c) => c === 'create').length).toBe(creates);
+  });
+});

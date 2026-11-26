@@ -1,29 +1,69 @@
+import { join } from 'path';
 import { fileStore } from '../config/store.js';
 import { resolveStateDir } from '../config/paths.js';
 import { webSettings } from '../config/web.js';
 import { daemonPaths } from '../daemon/descriptor.js';
-import { installService, uninstallService, serviceStatus, plistPath } from '../service/launchd.js';
+import * as launchd from '../service/launchd.js';
+import * as systemd from '../service/systemd.js';
 import { programArgsForCurrentInstall, serviceEnv } from '../service/install-args.js';
 import { logger } from '../utils/logger.js';
 
-function requireMac(): boolean {
-  if (process.platform === 'darwin') return true;
-  logger.error('`tuinnel-plus service` manages a macOS launchd agent; it is only available on macOS.\nRun `tuinnel-plus serve` under your own process manager instead.');
-  process.exitCode = 1;
-  return false;
+export function platformService(platform: NodeJS.Platform = process.platform): 'launchd' | 'systemd' | null {
+  if (platform === 'darwin') return 'launchd';
+  if (platform === 'linux') return 'systemd';
+  return null;
 }
 
+function requireSupported(): 'launchd' | 'systemd' | null {
+  const kind = platformService();
+  if (!kind) {
+    logger.error('`tuinnel-plus service` supports macOS (launchd) and Linux (systemd).\nRun `tuinnel-plus serve` under your own process manager instead.');
+    process.exitCode = 1;
+  }
+  return kind;
+}
+
+type Message = { level: 'success' | 'info' | 'warn'; text: string };
+
+/** What to tell the user after a Linux install. Pure, so the wording can be tested. */
+export function linuxInstallMessages(r: systemd.InstallResult, user: string, dashboardLine: string): Message[] {
+  const out: Message[] = [{ level: 'success', text: `Installed systemd user service: ${r.unitPath}` }];
+  if (r.replaced) out.push({ level: 'info', text: `Replaced the existing unit at ${r.unitPath}.` });
+  out.push({ level: 'info', text: dashboardLine });
+  if (r.linger === 'enabled') {
+    out.push({ level: 'info', text: `Enabled lingering for ${user}, so the service starts at boot without a login.` });
+  } else if (r.linger === 'needs-sudo') {
+    out.push({
+      level: 'warn',
+      text: `Lingering is off, so the service only runs while you are logged in. To start it at boot, run:\n  sudo loginctl enable-linger ${user}`,
+    });
+  }
+  if (r.logFile === null) out.push({ level: 'info', text: 'Logs: journalctl --user -u tuinnel-plus' });
+  return out;
+}
+
+const envFile = () => join(resolveStateDir(), 'service.env');
+
 export async function serviceInstallCommand(): Promise<void> {
-  if (!requireMac()) return;
+  const kind = requireSupported();
+  if (!kind) return;
   try {
-    const path = await installService({
+    const web = webSettings(fileStore.read());
+    const dashboard = `Dashboard: http://${web.host}:${web.port}`;
+    const common = {
       programArgs: programArgsForCurrentInstall(),
       env: serviceEnv(),
       logFile: daemonPaths(resolveStateDir()).logFile,
-    });
-    const web = webSettings(fileStore.read());
-    logger.success(`Installed launchd agent: ${path}`);
-    logger.info(`The service starts at login and restarts if it crashes. Dashboard: http://${web.host}:${web.port}`);
+    };
+    if (kind === 'launchd') {
+      const path = await launchd.installService(common);
+      logger.success(`Installed launchd agent: ${path}`);
+      logger.info(`The service starts at login and restarts if it crashes. ${dashboard}`);
+    } else {
+      const r = await systemd.installService({ ...common, envFile: envFile() });
+      const line = `The service starts at boot and restarts if it crashes. ${dashboard}`;
+      for (const m of linuxInstallMessages(r, systemd.defaultDeps.user, line)) logger[m.level](m.text);
+    }
     if (!web.passwordHash) {
       logger.info('No dashboard password yet — set one with `tuinnel-plus password set`, or open the dashboard on this machine.');
     }
@@ -34,18 +74,43 @@ export async function serviceInstallCommand(): Promise<void> {
 }
 
 export async function serviceUninstallCommand(): Promise<void> {
-  if (!requireMac()) return;
-  await uninstallService();
-  logger.success(`Removed launchd agent (${plistPath()}). Running tunnels stopped with the service.`);
+  const kind = requireSupported();
+  if (!kind) return;
+  if (kind === 'launchd') {
+    await launchd.uninstallService();
+    logger.success(`Removed launchd agent (${launchd.plistPath()}). Running tunnels stopped with the service.`);
+    return;
+  }
+  const r = await systemd.uninstallService(envFile());
+  if (!r.removed) {
+    logger.info('Service not installed.');
+  } else {
+    logger.success(`Removed systemd user service (${systemd.unitPath()}). Running tunnels stopped with the service.`);
+  }
+  if (r.lingerOn) {
+    const user = systemd.defaultDeps.user;
+    logger.info(`Lingering is still on for ${user}. If nothing else needs it: sudo loginctl disable-linger ${user}`);
+  }
 }
 
 export async function serviceStatusCommand(): Promise<void> {
-  if (!requireMac()) return;
-  const s = await serviceStatus();
-  if (!s.installed && !s.loaded) {
+  const kind = requireSupported();
+  if (!kind) return;
+  if (kind === 'launchd') {
+    const s = await launchd.serviceStatus();
+    if (!s.installed && !s.loaded) {
+      logger.info('Service not installed. Install it with `tuinnel-plus service install`.');
+      return;
+    }
+    const state = s.pid ? `running (pid ${s.pid})` : s.loaded ? 'loaded, not running' : 'installed, not loaded';
+    logger.info(`Service ${state}. Plist: ${launchd.plistPath()}`);
+    return;
+  }
+  const s = await systemd.serviceStatus();
+  if (!s.installed && !s.active) {
     logger.info('Service not installed. Install it with `tuinnel-plus service install`.');
     return;
   }
-  const state = s.pid ? `running (pid ${s.pid})` : s.loaded ? 'loaded, not running' : 'installed, not loaded';
-  logger.info(`Service ${state}. Plist: ${plistPath()}`);
+  const state = s.active ? (s.pid ? `running (pid ${s.pid})` : 'running') : 'installed, not running';
+  logger.info(`Service ${state}. Unit: ${systemd.unitPath()}. Lingering: ${s.linger ? 'on' : 'off'}.`);
 }

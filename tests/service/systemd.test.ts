@@ -60,7 +60,6 @@ describe('systemd unit', () => {
     expect(u).toContain('ExecStart="/usr/bin/node" "/opt/tp/dist/index.js" "serve"');
     expect(u).toContain(`EnvironmentFile=${ENV_FILE}`);
     expect(u).toContain('Restart=always');
-    expect(u).toContain('After=network-online.target');
     expect(u).toContain('WantedBy=default.target');
     expect(u).toContain(`StandardOutput=append:${LOG}`);
     expect(u).toContain(`StandardError=append:${LOG}`);
@@ -75,6 +74,17 @@ describe('systemd unit', () => {
   test('ExecStart quotes spaces and escapes " \\ % $', () => {
     const u = buildUnit({ programArgs: ['/home/a b/node', '/x/100%/$HOME/"q"\\', 'serve'], envFile: '/e', logFile: null });
     expect(u).toContain('ExecStart="/home/a b/node" "/x/100%%/$$HOME/\\"q\\"\\\\" "serve"');
+  });
+
+  test('% in the env file and log paths is escaped for systemd', () => {
+    const u = buildUnit({ programArgs: ['/n'], envFile: '/home/a%b/service.env', logFile: '/home/a%b/daemon.log' });
+    expect(u).toContain('EnvironmentFile=/home/a%%b/service.env');
+    expect(u).toContain('StandardOutput=append:/home/a%%b/daemon.log');
+    expect(u).toContain('StandardError=append:/home/a%%b/daemon.log');
+  });
+
+  test('no network-online.target: it does not exist for user units', () => {
+    expect(buildUnit({ programArgs: ['/n'], envFile: '/e', logFile: null })).not.toContain('network-online');
   });
 
   test('env file round-trips tricky values', () => {

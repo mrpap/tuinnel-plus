@@ -100,7 +100,6 @@ Prefer your own setup? Run `tuinnel-plus serve` under any process manager. A han
 # ~/.config/systemd/user/tuinnel-plus.service
 [Unit]
 Description=tuinnel-plus
-After=network-online.target
 
 [Service]
 ExecStart=/usr/bin/env tuinnel-plus serve

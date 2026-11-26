@@ -64,18 +64,23 @@ function execArg(s: string): string {
   return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%').replace(/\$/g, '$$$$')}"`;
 }
 
-/** The user unit. Pure, so it can be tested without installing. */
+/** A path in a unit setting: systemd expands % specifiers there too. */
+const unitPathValue = (s: string) => s.replace(/%/g, '%%');
+
+/**
+ * The user unit. Pure, so it can be tested without installing. No network-online.target:
+ * user managers don't have one; Restart=always and cloudflared's own retries cover a late network.
+ */
 export function buildUnit(o: UnitOptions): string {
-  const log = o.logFile ? `StandardOutput=append:${o.logFile}\nStandardError=append:${o.logFile}\n` : '';
+  const logPath = o.logFile ? unitPathValue(o.logFile) : null;
+  const log = logPath ? `StandardOutput=append:${logPath}\nStandardError=append:${logPath}\n` : '';
   return `${HEADER}
 [Unit]
 Description=tuinnel-plus
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 ExecStart=${o.programArgs.map(execArg).join(' ')}
-EnvironmentFile=${o.envFile}
+EnvironmentFile=${unitPathValue(o.envFile)}
 Restart=always
 RestartSec=2
 ${log}

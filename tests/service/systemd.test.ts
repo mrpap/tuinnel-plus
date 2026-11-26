@@ -198,6 +198,25 @@ describe('uninstallService', () => {
     expect(calls.indexOf('systemctl --user daemon-reload')).toBeGreaterThan(calls.indexOf(`rm ${UNIT}`));
   });
 
+  test('removes the env file our unit points to, even if TUINNEL_HOME changed since install', async () => {
+    const { deps, files } = fakeDeps({ [LINGER]: { code: 0, stdout: 'no' } });
+    const other = '/srv/tp%%state/service.env';
+    files.set(UNIT, buildUnit({ programArgs: ['/n'], envFile: '/srv/tp%state/service.env', logFile: null }));
+    files.set('/srv/tp%state/service.env', 'TOKEN="x"\n');
+    await uninstallService(ENV_FILE, deps);
+    expect(files.has('/srv/tp%state/service.env')).toBe(false);
+    expect(files.has(other)).toBe(false);
+  });
+
+  test("leaves a hand-written unit's own env file alone", async () => {
+    const { deps, files } = fakeDeps({ [LINGER]: { code: 0, stdout: 'no' } });
+    files.set(UNIT, '[Service]\nEnvironmentFile=/etc/my-secrets\nExecStart=/usr/bin/env tuinnel-plus serve\n');
+    files.set('/etc/my-secrets', 'keep');
+    await uninstallService(ENV_FILE, deps);
+    expect(files.get('/etc/my-secrets')).toBe('keep');
+    expect(files.has(UNIT)).toBe(false);
+  });
+
   test('nothing installed → removed false', async () => {
     const { deps } = fakeDeps({ [LINGER]: { code: 0, stdout: 'no' } });
     expect(await uninstallService(ENV_FILE, deps)).toEqual({ removed: false, lingerOn: false });

@@ -173,9 +173,15 @@ export async function uninstallService(
 ): Promise<{ removed: boolean; lingerOn: boolean }> {
   const path = unitPath(deps.home);
   const removed = deps.exists(path);
+  // Our unit says where its env file is, which may not be the current state dir (TUINNEL_HOME
+  // can differ from install time). A hand-written unit's EnvironmentFile is not ours to delete.
+  const unit = removed ? deps.readFile(path) : null;
+  const ours = unit?.startsWith(HEADER) ? /^EnvironmentFile=(.+)$/m.exec(unit)?.[1].replace(/%%/g, '%') : undefined;
   await systemctl(deps, 'disable', '--now', SYSTEMD_UNIT); // not installed is fine
   if (removed) deps.removeFile(path);
-  if (deps.exists(envFile)) deps.removeFile(envFile);
+  for (const f of new Set([envFile, ours].filter((f): f is string => !!f))) {
+    if (deps.exists(f)) deps.removeFile(f);
+  }
   await systemctl(deps, 'daemon-reload');
   return { removed, lingerOn: await lingerOn(deps) };
 }

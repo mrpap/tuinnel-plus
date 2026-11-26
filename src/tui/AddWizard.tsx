@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { StatusMessage, TextInput } from '@inkjs/ui';
 import { Modal } from './Modal.js';
@@ -23,21 +23,27 @@ export function AddWizard({ defaultZone, zones, onSubmit, onCancel }: AddWizardP
     const i = zones.findIndex(z => z.name === defaultZone);
     return i >= 0 ? i : 0;
   });
-  // What is typed in the port field before Enter, so Esc knows there is something to lose
-  const [portDraft, setPortDraft] = useState('');
+  // Refs, not state: a key typed just before Esc must count even before React re-renders
+  const touched = useRef(false);
+  const confirming = useRef(false);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
-  const dirty = step !== 'port' || portDraft !== '';
+  const dirty = () => touched.current || step !== 'port';
 
   useInput((input, key) => {
     if (key.escape) {
-      if (dirty && !confirmingDiscard) {
+      if (dirty() && !confirming.current) {
+        confirming.current = true;
         setConfirmingDiscard(true);
         return;
       }
       onCancel();
       return;
     }
-    if (confirmingDiscard) setConfirmingDiscard(false);
+    if (!key.tab && !key.return) touched.current = true;
+    if (confirming.current) {
+      confirming.current = false;
+      setConfirmingDiscard(false);
+    }
 
     // Zone step: own navigation + submit so Enter confirms whether or not the
     // selection changed. @inkjs/ui's Select only fires onChange on a *change*,
@@ -115,7 +121,6 @@ export function AddWizard({ defaultZone, zones, onSubmit, onCancel }: AddWizardP
             <TextInput
               defaultValue={port}
               placeholder="e.g. 3000"
-              onChange={setPortDraft}
               onSubmit={handlePortSubmit}
             />
           </Box>

@@ -85,6 +85,15 @@ describe('AddWizard Esc', () => {
     await waitFor(() => expect(cancels()).toBe(1));
   });
 
+  test('Esc pressed straight after typing still asks (no redraw in between)', async () => {
+    const { app, cancels } = wizard();
+    await press(app, '');
+    app.stdin.write('3');
+    app.stdin.write(ESC);
+    await waitFor(() => expect(app.lastFrame()).toContain(PROMPT));
+    expect(cancels()).toBe(0);
+  });
+
   test('another key after the prompt keeps editing', async () => {
     const { app, cancels } = wizard();
     await press(app, '3');

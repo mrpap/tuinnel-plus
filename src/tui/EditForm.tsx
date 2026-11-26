@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { StatusMessage, TextInput } from '@inkjs/ui';
 import { Modal } from './Modal.js';
@@ -22,25 +22,29 @@ export function EditForm({ tunnel, zones, onSubmit, onCancel }: EditFormProps) {
     return idx >= 0 ? idx : 0;
   });
   const [error, setError] = useState<string | null>(null);
-  // Live text of each field (including what is typed before Enter) and the zone we started on
-  const [portDraft, setPortDraft] = useState(String(tunnel.port));
-  const [subdomainDraft, setSubdomainDraft] = useState(tunnel.subdomain);
-  const [initialZoneIndex] = useState(zoneIndex);
+  // Refs, not state: a key typed just before Esc must count even before React re-renders
+  const touched = useRef(false);
+  const confirming = useRef(false);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
-  const dirty = portDraft !== String(tunnel.port) || subdomainDraft !== tunnel.subdomain || zoneIndex !== initialZoneIndex;
+  const dirty = () => touched.current;
 
   const activeIndex = FIELDS.indexOf(activeField);
 
   useInput((input, key) => {
     if (key.escape) {
-      if (dirty && !confirmingDiscard) {
+      if (dirty() && !confirming.current) {
+        confirming.current = true;
         setConfirmingDiscard(true);
         return;
       }
       onCancel();
       return;
     }
-    if (confirmingDiscard) setConfirmingDiscard(false);
+    if (!key.tab && !key.return) touched.current = true;
+    if (confirming.current) {
+      confirming.current = false;
+      setConfirmingDiscard(false);
+    }
 
     if (key.tab) {
       const next = (activeIndex + 1) % FIELDS.length;
@@ -146,7 +150,6 @@ export function EditForm({ tunnel, zones, onSubmit, onCancel }: EditFormProps) {
               <Text color="cyan">&gt; </Text>
               <TextInput
                 defaultValue={port}
-                onChange={setPortDraft}
                 onSubmit={handlePortSubmit}
               />
             </Box>
@@ -165,7 +168,6 @@ export function EditForm({ tunnel, zones, onSubmit, onCancel }: EditFormProps) {
               <Text color="cyan">&gt; </Text>
               <TextInput
                 defaultValue={subdomain}
-                onChange={setSubdomainDraft}
                 onSubmit={handleSubdomainSubmit}
               />
             </Box>

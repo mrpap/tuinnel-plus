@@ -71,6 +71,15 @@ describe('EditForm Esc', () => {
     await waitFor(() => expect(cancels()).toBe(1));
   });
 
+  test('Esc pressed straight after typing still asks (no redraw in between)', async () => {
+    const { app, cancels } = form();
+    await press(app, '');
+    app.stdin.write('1');
+    app.stdin.write(ESC);
+    await waitFor(() => expect(app.lastFrame()).toContain(PROMPT));
+    expect(cancels()).toBe(0);
+  });
+
   test('Esc after editing the port asks first', async () => {
     const { app, cancels } = form();
     await press(app, '1');

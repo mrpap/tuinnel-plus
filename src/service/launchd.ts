@@ -1,5 +1,5 @@
 import { execFile } from 'child_process';
-import { chmodSync, existsSync, mkdirSync, realpathSync, unlinkSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 
@@ -81,21 +81,6 @@ ${env}
 </dict>
 </plist>
 `;
-}
-
-/** How to re-run this exact install: the current runtime + entry script + `serve`. */
-export function programArgsForCurrentInstall(): string[] {
-  return [process.execPath, realpathSync(process.argv[1]), 'serve'];
-}
-
-/** Environment the agent needs: state dir, which cloudflared to run, PATH, and a token if one came from env. */
-export function serviceEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const key of ['TUINNEL_HOME', 'TUINNEL_CLOUDFLARED', 'PATH', 'CLOUDFLARE_API_TOKEN', 'TUINNEL_API_TOKEN']) {
-    const v = env[key];
-    if (v) out[key] = v;
-  }
-  return out;
 }
 
 const target = (deps: LaunchdDeps) => `gui/${deps.uid}/${LAUNCHD_LABEL}`;

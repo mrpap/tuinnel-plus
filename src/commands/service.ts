@@ -2,9 +2,8 @@ import { fileStore } from '../config/store.js';
 import { resolveStateDir } from '../config/paths.js';
 import { webSettings } from '../config/web.js';
 import { daemonPaths } from '../daemon/descriptor.js';
-import {
-  installService, uninstallService, serviceStatus, programArgsForCurrentInstall, serviceEnv, plistPath,
-} from '../service/launchd.js';
+import { installService, uninstallService, serviceStatus, plistPath } from '../service/launchd.js';
+import { programArgsForCurrentInstall, serviceEnv } from '../service/install-args.js';
 import { logger } from '../utils/logger.js';
 
 function requireMac(): boolean {

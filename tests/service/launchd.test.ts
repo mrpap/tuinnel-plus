@@ -3,9 +3,10 @@ import { mkdtempSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
-  LAUNCHD_LABEL, plistPath, buildPlist, serviceEnv, installService, uninstallService, serviceStatus,
+  LAUNCHD_LABEL, plistPath, buildPlist, installService, uninstallService, serviceStatus,
   defaultDeps, type LaunchdDeps,
 } from '../../src/service/launchd.js';
+import { serviceEnv } from '../../src/service/install-args.js';
 
 const opts = {
   programArgs: ['/usr/local/bin/node', '/opt/tp/dist/index.js', 'serve'],

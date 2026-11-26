@@ -765,7 +765,7 @@ function tunnelView(root) {
       t.system ? h('span', { class: 'tag accent' }, 'Serves this dashboard') : null,
       t.system ? null : h('button', { class: 'btn', type: 'button', disabled, onclick: () => startStop(t) },
         icon(running ? 'stop' : 'play_arrow'), running ? 'Stop' : 'Start'),
-      h('button', { class: 'btn', type: 'button', disabled, onclick: () => restart(t) }, icon('restart_alt'), 'Restart'),
+      t.system ? null : h('button', { class: 'btn', type: 'button', disabled, onclick: () => restart(t) }, icon('restart_alt'), 'Restart'),
       t.system ? null : h('button', { class: 'btn', type: 'button', disabled, onclick: startEdit }, icon('edit'), 'Edit'),
       t.system ? null : h('button', {
         class: 'btn danger', type: 'button', disabled,

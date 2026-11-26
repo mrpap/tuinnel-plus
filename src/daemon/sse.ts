@@ -71,6 +71,11 @@ export class SseHub {
     res.socket?.once('close', drop);
   }
 
+  /** Hand a session's streams to its replacement (the browser that just changed the password). */
+  moveSession(from: string, to: string): void {
+    for (const [res, sid] of this.clients) if (sid === from) this.clients.set(res, to);
+  }
+
   /** End every browser stream whose session was signed out, revoked or has expired. */
   dropInvalidSessions(): void {
     for (const [res, sid] of this.clients) {

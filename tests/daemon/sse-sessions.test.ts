@@ -86,7 +86,7 @@ describe('live updates end with the session', () => {
     expect(await browser.endedWithin(1000)).toBe(true);
   });
 
-  test('changing the password ends other streams, and the changer stays signed in', async () => {
+  test('changing the password ends other streams; the changer stays signed in and keeps its stream', async () => {
     const { port } = await boot();
     const mine = await login(port);
     const other = await login(port);
@@ -100,8 +100,9 @@ describe('live updates end with the session', () => {
     expect(res.status).toBe(200);
 
     expect(await otherStream.endedWithin(1000)).toBe(true);
-    // The old cookie's stream ends too; the tab reconnects with the fresh cookie.
-    expect(await myStream.endedWithin(1000)).toBe(true);
+    // The changer's stream moves to its new session instead of dropping.
+    expect(await myStream.endedWithin(300)).toBe(false);
+    myStream.abort();
     const fresh = pair(res);
     const status = await raw(port, { path: '/api/auth/status', headers: { cookie: fresh } });
     expect(status.json.authenticated).toBe(true);

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { hashPassword, verifyPassword, MIN_PASSWORD_LENGTH } from '../auth.js';
-import { sessionCookie } from '../guard.js';
+import { sessionCookie, sessionId } from '../guard.js';
 import { HttpError, sendJson, type DaemonDeps } from '../server.js';
 import type { Router } from '../router.js';
 import { webSettings } from '../../config/web.js';
@@ -67,8 +67,12 @@ export function registerSettingsRoutes(router: Router, deps: DaemonDeps): void {
     config.web = { ...config.web, passwordHash: hashPassword(next) };
     store.write(config);
     sessions.revokeAll();
+    const fresh = sessions.create();
+    // The browser that made the change keeps its live updates; every other one is signed out.
+    const own = /^Bearer /.test(req.headers.authorization ?? '') ? null : sessionId(req);
+    if (own) deps.hub?.moveSession(own, fresh);
     deps.hub?.dropInvalidSessions();
-    res.setHeader('Set-Cookie', sessionCookie(sessions.create(), req));
+    res.setHeader('Set-Cookie', sessionCookie(fresh, req));
     sendJson(res, 200, { ok: true });
   });
 

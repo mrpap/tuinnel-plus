@@ -124,6 +124,10 @@ export function createDaemonServer(deps: DaemonDeps): { server: Server; router: 
   });
 
   const server = createServer(async (req, res) => {
+    // No other site may frame the web UI (clickjacking), and browsers must trust our content types.
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     try {
       const host = req.headers.host ?? '';
       if (!deps.allowedHosts().includes(host)) {

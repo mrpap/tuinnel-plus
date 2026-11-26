@@ -22,14 +22,25 @@ export function EditForm({ tunnel, zones, onSubmit, onCancel }: EditFormProps) {
     return idx >= 0 ? idx : 0;
   });
   const [error, setError] = useState<string | null>(null);
+  // Live text of each field (including what is typed before Enter) and the zone we started on
+  const [portDraft, setPortDraft] = useState(String(tunnel.port));
+  const [subdomainDraft, setSubdomainDraft] = useState(tunnel.subdomain);
+  const [initialZoneIndex] = useState(zoneIndex);
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+  const dirty = portDraft !== String(tunnel.port) || subdomainDraft !== tunnel.subdomain || zoneIndex !== initialZoneIndex;
 
   const activeIndex = FIELDS.indexOf(activeField);
 
   useInput((input, key) => {
     if (key.escape) {
+      if (dirty && !confirmingDiscard) {
+        setConfirmingDiscard(true);
+        return;
+      }
       onCancel();
       return;
     }
+    if (confirmingDiscard) setConfirmingDiscard(false);
 
     if (key.tab) {
       const next = (activeIndex + 1) % FIELDS.length;
@@ -114,6 +125,11 @@ export function EditForm({ tunnel, zones, onSubmit, onCancel }: EditFormProps) {
   return (
     <Modal title={`Edit: ${tunnel.name}`} visible>
       <Box flexDirection="column">
+        {confirmingDiscard && (
+          <Box marginBottom={1}>
+            <Text color="yellow">Discard changes? Esc again to discard.</Text>
+          </Box>
+        )}
         {error && (
           <Box marginBottom={1}>
             <StatusMessage variant="error">{error}</StatusMessage>
@@ -130,6 +146,7 @@ export function EditForm({ tunnel, zones, onSubmit, onCancel }: EditFormProps) {
               <Text color="cyan">&gt; </Text>
               <TextInput
                 defaultValue={port}
+                onChange={setPortDraft}
                 onSubmit={handlePortSubmit}
               />
             </Box>
@@ -148,6 +165,7 @@ export function EditForm({ tunnel, zones, onSubmit, onCancel }: EditFormProps) {
               <Text color="cyan">&gt; </Text>
               <TextInput
                 defaultValue={subdomain}
+                onChange={setSubdomainDraft}
                 onSubmit={handleSubdomainSubmit}
               />
             </Box>

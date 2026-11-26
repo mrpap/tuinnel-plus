@@ -2,7 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import React from 'react';
 import { render } from 'ink-testing-library';
 import { EditForm } from '../../src/tui/EditForm.js';
-import { press } from './wait.js';
+import { press, waitFor } from './wait.js';
 
 const ENTER = '\r';
 const DOWN = '\x1B[B';
@@ -50,5 +50,34 @@ describe('EditForm', () => {
     await press({ stdin, lastFrame }, ENTER); // confirm zone (changed)
 
     expect(submitted).toEqual({ port: 4322, subdomain: 'myapp', zone: 'example.org' });
+  });
+});
+
+describe('EditForm Esc', () => {
+  const ESC = '\x1B';
+  const PROMPT = 'Discard changes? Esc again to discard.';
+
+  function form() {
+    let cancels = 0;
+    const app = render(
+      <EditForm tunnel={TUNNEL} zones={ZONES} onSubmit={() => {}} onCancel={() => { cancels++; }} />
+    );
+    return { app, cancels: () => cancels };
+  }
+
+  test('Esc without changes closes at once', async () => {
+    const { app, cancels } = form();
+    await press(app, ESC);
+    await waitFor(() => expect(cancels()).toBe(1));
+  });
+
+  test('Esc after editing the port asks first', async () => {
+    const { app, cancels } = form();
+    await press(app, '1');
+    await press(app, ESC);
+    expect(app.lastFrame()).toContain(PROMPT);
+    expect(cancels()).toBe(0);
+    await press(app, ESC);
+    await waitFor(() => expect(cancels()).toBe(1));
   });
 });

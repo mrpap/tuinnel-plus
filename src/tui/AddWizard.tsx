@@ -23,12 +23,21 @@ export function AddWizard({ defaultZone, zones, onSubmit, onCancel }: AddWizardP
     const i = zones.findIndex(z => z.name === defaultZone);
     return i >= 0 ? i : 0;
   });
+  // What is typed in the port field before Enter, so Esc knows there is something to lose
+  const [portDraft, setPortDraft] = useState('');
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+  const dirty = step !== 'port' || portDraft !== '';
 
   useInput((input, key) => {
     if (key.escape) {
+      if (dirty && !confirmingDiscard) {
+        setConfirmingDiscard(true);
+        return;
+      }
       onCancel();
       return;
     }
+    if (confirmingDiscard) setConfirmingDiscard(false);
 
     // Zone step: own navigation + submit so Enter confirms whether or not the
     // selection changed. @inkjs/ui's Select only fires onChange on a *change*,
@@ -89,6 +98,11 @@ export function AddWizard({ defaultZone, zones, onSubmit, onCancel }: AddWizardP
 
   return (
     <Modal title="Add Tunnel" visible>
+      {confirmingDiscard && (
+        <Box marginBottom={1}>
+          <Text color="yellow">Discard changes? Esc again to discard.</Text>
+        </Box>
+      )}
       <Box marginBottom={1}>
         <Text dimColor>Step {stepNumber} of {totalSteps}</Text>
       </Box>
@@ -101,6 +115,7 @@ export function AddWizard({ defaultZone, zones, onSubmit, onCancel }: AddWizardP
             <TextInput
               defaultValue={port}
               placeholder="e.g. 3000"
+              onChange={setPortDraft}
               onSubmit={handlePortSubmit}
             />
           </Box>

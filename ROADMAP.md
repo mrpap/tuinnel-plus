@@ -8,7 +8,6 @@ What's planned for tuinnel-plus, roughly in order. Ideas and feedback are welcom
 - **More protocols** — SSH, RDP and plain TCP tunnels (SMB as a TCP preset), managed like any other tunnel, with a ready-to-copy `cloudflared access` command for connecting
 - **Verified downloads** — check the checksum of the `cloudflared` binary it downloads
 - **Web UI hardening** — end live updates on sign-out or password change, block embedding in other sites, stricter checks on the web UI's own subdomain, and no restart button on the tunnel that serves the dashboard itself
-- **Safer forms** — ask before Esc closes a form with unsaved changes
 - **One writer for the config** — `add` and `up` save new tunnels through the running service instead of writing the config file themselves
 
 ## Later

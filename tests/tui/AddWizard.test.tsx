@@ -56,3 +56,42 @@ describe('AddWizard', () => {
     expect(submitted?.port).toBe(3000);
   });
 });
+
+describe('AddWizard Esc', () => {
+  const ESC = '\x1B';
+  const PROMPT = 'Discard changes? Esc again to discard.';
+
+  function wizard() {
+    let cancels = 0;
+    const app = render(
+      <AddWizard defaultZone="example.com" zones={ZONES} onSubmit={() => {}} onCancel={() => { cancels++; }} />
+    );
+    return { app, cancels: () => cancels };
+  }
+
+  test('Esc on an untouched form closes it at once', async () => {
+    const { app, cancels } = wizard();
+    await press(app, ESC);
+    await waitFor(() => expect(cancels()).toBe(1));
+  });
+
+  test('Esc after typing asks first; a second Esc discards', async () => {
+    const { app, cancels } = wizard();
+    await press(app, '3000');
+    await press(app, ESC);
+    expect(app.lastFrame()).toContain(PROMPT);
+    expect(cancels()).toBe(0);
+    await press(app, ESC);
+    await waitFor(() => expect(cancels()).toBe(1));
+  });
+
+  test('another key after the prompt keeps editing', async () => {
+    const { app, cancels } = wizard();
+    await press(app, '3');
+    await press(app, ESC);
+    await press(app, '0');
+    expect(app.lastFrame()).not.toContain(PROMPT);
+    expect(app.lastFrame()).toContain('30');
+    expect(cancels()).toBe(0);
+  });
+});

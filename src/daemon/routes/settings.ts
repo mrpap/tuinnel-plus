@@ -61,6 +61,7 @@ export function registerSettingsRoutes(router: Router, deps: DaemonDeps): void {
     config.web = { ...config.web, passwordHash: hashPassword(next) };
     store.write(config);
     sessions.revokeAll();
+    deps.hub?.dropInvalidSessions();
     res.setHeader('Set-Cookie', sessionCookie(sessions.create(), req));
     sendJson(res, 200, { ok: true });
   });
@@ -69,6 +70,7 @@ export function registerSettingsRoutes(router: Router, deps: DaemonDeps): void {
   router.add('POST', '/api/settings/password/reload', ({ req, res }) => {
     if (!/^Bearer /.test(req.headers.authorization ?? '')) throw new HttpError(403, 'Local clients only.');
     auth().sessions.revokeAll();
+    deps.hub?.dropInvalidSessions();
     res.writeHead(204);
     res.end();
   });

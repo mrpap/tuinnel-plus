@@ -63,6 +63,7 @@ export function registerAuthRoutes(router: Router, deps: DaemonDeps): void {
   router.add('POST', '/api/auth/logout', ({ req, res }) => {
     const sid = sessionId(req);
     if (sid) auth().sessions.revoke(sid);
+    deps.hub?.dropInvalidSessions();
     res.setHeader('Set-Cookie', clearedSessionCookie(req));
     sendJson(res, 200, { ok: true });
   });

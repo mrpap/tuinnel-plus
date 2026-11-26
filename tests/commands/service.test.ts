@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { platformService, linuxInstallMessages } from '../../src/commands/service.js';
+import { platformService, linuxInstallMessages, linuxUninstallMessages } from '../../src/commands/service.js';
 
 const DASH = 'The service starts at boot and restarts if it crashes. Dashboard: http://127.0.0.1:8484';
 const UNIT = '/home/me/.config/systemd/user/tuinnel-plus.service';
@@ -61,5 +61,20 @@ describe('linuxInstallMessages', () => {
     expect(linuxInstallMessages({ ...base, logFile: null }, 'me', DASH)).toContainEqual(
       { level: 'info', text: 'Logs: journalctl --user -u tuinnel-plus' },
     );
+  });
+});
+
+describe('linuxUninstallMessages', () => {
+  test('removed, lingering still on → mentions how to turn it off', () => {
+    expect(linuxUninstallMessages({ removed: true, lingerOn: true }, 'me', UNIT)).toEqual([
+      { level: 'success', text: `Removed systemd user service (${UNIT}). Running tunnels stopped with the service.` },
+      { level: 'info', text: 'Lingering is still on for me. If nothing else needs it: sudo loginctl disable-linger me' },
+    ]);
+  });
+
+  test('nothing installed → no lingering hint', () => {
+    expect(linuxUninstallMessages({ removed: false, lingerOn: true }, 'me', UNIT)).toEqual([
+      { level: 'info', text: 'Service not installed.' },
+    ]);
   });
 });

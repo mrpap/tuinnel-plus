@@ -63,6 +63,16 @@ export function linuxInstallMessages(
   return out;
 }
 
+/** What to tell the user after a Linux uninstall. */
+export function linuxUninstallMessages(r: { removed: boolean; lingerOn: boolean }, user: string, unit: string): Message[] {
+  if (!r.removed) return [{ level: 'info', text: 'Service not installed.' }];
+  const out: Message[] = [{ level: 'success', text: `Removed systemd user service (${unit}). Running tunnels stopped with the service.` }];
+  if (r.lingerOn) {
+    out.push({ level: 'info', text: `Lingering is still on for ${user}. If nothing else needs it: sudo loginctl disable-linger ${user}` });
+  }
+  return out;
+}
+
 const envFile = () => join(resolveStateDir(), 'service.env');
 
 /** The pid of a daemon that is up for this state directory, if any. */
@@ -117,15 +127,7 @@ export async function serviceUninstallCommand(): Promise<void> {
     return;
   }
   const r = await systemd.uninstallService(envFile());
-  if (!r.removed) {
-    logger.info('Service not installed.');
-  } else {
-    logger.success(`Removed systemd user service (${systemd.unitPath()}). Running tunnels stopped with the service.`);
-  }
-  if (r.lingerOn) {
-    const user = systemd.defaultDeps.user;
-    logger.info(`Lingering is still on for ${user}. If nothing else needs it: sudo loginctl disable-linger ${user}`);
-  }
+  for (const m of linuxUninstallMessages(r, systemd.defaultDeps.user, systemd.unitPath())) logger[m.level](m.text);
 }
 
 export async function serviceStatusCommand(): Promise<void> {

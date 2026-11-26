@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { platformService, linuxInstallMessages, linuxUninstallMessages } from '../../src/commands/service.js';
+import { platformService, linuxInstallMessages, linuxUninstallMessages, macInstallMessages } from '../../src/commands/service.js';
 
 const DASH = 'The service starts at boot and restarts if it crashes. Dashboard: http://127.0.0.1:8484';
 const UNIT = '/home/me/.config/systemd/user/tuinnel-plus.service';
@@ -76,5 +76,31 @@ describe('linuxUninstallMessages', () => {
     expect(linuxUninstallMessages({ removed: false, lingerOn: true }, 'me', UNIT)).toEqual([
       { level: 'info', text: 'Service not installed.' },
     ]);
+  });
+});
+
+describe('macInstallMessages', () => {
+  const PLIST = '/Users/me/Library/LaunchAgents/io.github.mrpap.tuinnel-plus.plist';
+  const MAC_DASH = 'The service starts at login and restarts if it crashes. Dashboard: http://127.0.0.1:8484';
+
+  test('a plain install', () => {
+    expect(macInstallMessages({ path: PLIST, running: true }, MAC_DASH, '/log')).toEqual([
+      { level: 'success', text: `Installed launchd agent: ${PLIST}` },
+      { level: 'info', text: MAC_DASH },
+    ]);
+  });
+
+  test('says so when the service did not stay running, naming the process to stop', () => {
+    expect(macInstallMessages({ path: PLIST, running: false }, MAC_DASH, '/log', 4242)).toEqual([
+      { level: 'warn', text: `Installed launchd agent: ${PLIST}, but it did not stay running.` },
+      { level: 'warn', text: 'tuinnel-plus is already running outside the service (pid 4242). Stop it with `kill 4242`, then run `tuinnel-plus service install` again.' },
+    ]);
+  });
+
+  test('points at status and the log when no other process is found', () => {
+    expect(macInstallMessages({ path: PLIST, running: false }, MAC_DASH, '/log')).toContainEqual({
+      level: 'warn',
+      text: 'If tuinnel-plus is already running outside the service (for example started by the terminal dashboard), stop that process and run `tuinnel-plus service install` again. Details: `tuinnel-plus service status` and /log',
+    });
   });
 });

@@ -25,6 +25,36 @@ function requireSupported(): 'launchd' | 'systemd' | null {
 
 type Message = { level: 'success' | 'info' | 'warn'; text: string };
 
+/** Why a just-installed service may not be running, and what to do about it. */
+function notRunningAdvice(outsidePid: number | null, logRef: string): Message {
+  return outsidePid
+    ? {
+      level: 'warn',
+      text: `tuinnel-plus is already running outside the service (pid ${outsidePid}). Stop it with \`kill ${outsidePid}\`, then run \`tuinnel-plus service install\` again.`,
+    }
+    : {
+      level: 'warn',
+      text: 'If tuinnel-plus is already running outside the service (for example started by the terminal dashboard), stop that process and run `tuinnel-plus service install` again. '
+        + `Details: \`tuinnel-plus service status\` and ${logRef}`,
+    };
+}
+
+/** What to tell the user after a macOS install. */
+export function macInstallMessages(
+  r: { path: string; running: boolean },
+  dashboardLine: string,
+  logFile: string,
+  outsidePid: number | null = null,
+): Message[] {
+  if (r.running) {
+    return [{ level: 'success', text: `Installed launchd agent: ${r.path}` }, { level: 'info', text: dashboardLine }];
+  }
+  return [
+    { level: 'warn', text: `Installed launchd agent: ${r.path}, but it did not stay running.` },
+    notRunningAdvice(outsidePid, logFile),
+  ];
+}
+
 /** What to tell the user after a Linux install. Pure, so the wording can be tested. */
 export function linuxInstallMessages(
   r: systemd.InstallResult,
@@ -38,16 +68,7 @@ export function linuxInstallMessages(
     : [{ level: 'warn', text: `Installed systemd user service: ${r.unitPath}, but it did not stay running.` }];
   if (r.replaced) out.push({ level: 'info', text: `Replaced the existing unit at ${r.unitPath}.` });
   if (!r.running) {
-    out.push(outsidePid
-      ? {
-        level: 'warn',
-        text: `tuinnel-plus is already running outside the service (pid ${outsidePid}). Stop it with \`kill ${outsidePid}\`, then run \`tuinnel-plus service install\` again.`,
-      }
-      : {
-        level: 'warn',
-        text: 'If tuinnel-plus is already running outside the service (for example started by the terminal dashboard), stop that process and run `tuinnel-plus service install` again. '
-          + `Details: \`tuinnel-plus service status\` and ${r.logFile ?? '`journalctl --user -u tuinnel-plus`'}`,
-      });
+    out.push(notRunningAdvice(outsidePid, r.logFile ?? '`journalctl --user -u tuinnel-plus`'));
   } else {
     out.push({ level: 'info', text: dashboardLine });
   }
@@ -99,9 +120,11 @@ export async function serviceInstallCommand(): Promise<void> {
       logFile: daemonPaths(resolveStateDir()).logFile,
     };
     if (kind === 'launchd') {
-      const path = await launchd.installService(common);
-      logger.success(`Installed launchd agent: ${path}`);
-      logger.info(`The service starts at login and restarts if it crashes. ${dashboard}`);
+      const r = await launchd.installService(common);
+      const line = `The service starts at login and restarts if it crashes. ${dashboard}`;
+      const outsidePid = r.running ? null : runningDaemonPid();
+      for (const m of macInstallMessages(r, line, common.logFile, outsidePid)) logger[m.level](m.text);
+      if (!r.running) process.exitCode = 1;
     } else {
       const r = await systemd.installService({ ...common, envFile: envFile() });
       const line = `The service starts at boot and restarts if it crashes. ${dashboard}`;

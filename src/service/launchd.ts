@@ -17,6 +17,7 @@ export interface LaunchdDeps {
   removeFile(path: string): void;
   exists(path: string): boolean;
   mkdir(path: string): void;
+  sleep(ms: number): Promise<void>;
   uid: number;
   home: string;
 }
@@ -36,6 +37,7 @@ export const defaultDeps: LaunchdDeps = {
   removeFile: (p) => unlinkSync(p),
   exists: (p) => existsSync(p),
   mkdir: (p) => mkdirSync(p, { recursive: true }),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   uid: process.getuid?.() ?? 501,
   home: homedir(),
 };
@@ -85,7 +87,13 @@ ${env}
 
 const target = (deps: LaunchdDeps) => `gui/${deps.uid}/${LAUNCHD_LABEL}`;
 
-export async function installService(o: PlistOptions, deps: LaunchdDeps = defaultDeps): Promise<string> {
+/** How long a freshly loaded agent must survive before install calls it running. */
+const SETTLE_MS = 3000;
+
+export async function installService(
+  o: PlistOptions,
+  deps: LaunchdDeps = defaultDeps,
+): Promise<{ path: string; running: boolean }> {
   const path = plistPath(deps.home);
   deps.mkdir(dirname(path));
   deps.mkdir(dirname(o.logFile));
@@ -93,7 +101,13 @@ export async function installService(o: PlistOptions, deps: LaunchdDeps = defaul
   await deps.exec('launchctl', ['bootout', target(deps)]); // not loaded yet is fine
   const res = await deps.exec('launchctl', ['bootstrap', `gui/${deps.uid}`, path]);
   if (res.code !== 0) throw new Error(`launchctl bootstrap failed: ${res.stdout.trim() || `exit ${res.code}`}`);
-  return path;
+
+  // bootstrap returns once the job is loaded; a serve that exits at once (port taken by a
+  // daemon the dashboard started, say) only shows as a stopped job or a recorded exit.
+  await deps.sleep(SETTLE_MS);
+  const info = await deps.exec('launchctl', ['print', target(deps)]);
+  const running = /^\tstate = running$/m.test(info.stdout) && /^\tlast exit code = \(never exited\)$/m.test(info.stdout);
+  return { path, running };
 }
 
 export async function uninstallService(deps: LaunchdDeps = defaultDeps): Promise<void> {

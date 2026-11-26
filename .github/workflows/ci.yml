@@ -26,4 +26,8 @@ jobs:
       - run: bun run test
       - run: bun run build
       - name: Smoke-test the built CLI
-        run: node dist/index.js --version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          out=$(node dist/index.js --version)
+          echo "$out"
+          case "$out" in "$version"|"$version ("*")") ;; *) echo "Built CLI reports '$out', expected $version"; exit 1 ;; esac

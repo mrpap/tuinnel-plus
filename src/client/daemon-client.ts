@@ -100,7 +100,7 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     return this.request('GET', '/api/zones');
   }
 
-  status(): Promise<{ version: string; uptimeMs: number; counts: Record<string, number>; selfExpose: { enabled: boolean; url: string | null } }> {
+  status(): Promise<{ version: string; commit: string | null; uptimeMs: number; counts: Record<string, number>; selfExpose: { enabled: boolean; url: string | null } }> {
     return this.request('GET', '/api/status');
   }
 

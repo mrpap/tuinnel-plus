@@ -1,9 +1,9 @@
 import { describe, test, expect } from 'bun:test';
 // @ts-expect-error — plain browser ES module, no type declarations
 import {
-  initialState, applySnapshot, applyEvent, applyLogs, needsLogHistory, visibleTunnels, tunnelCounts, stateTone, stateLabel, formatUptime, versionText, versionParts,
+  initialState, applySnapshot, applyEvent, applyLogs, needsLogHistory, visibleTunnels, tunnelCounts, stateTone, stateLabel, formatUptime,
   parseRoute, routeHash, validateTunnelForm, nextTheme, themeLabel,
-  oklchToHex, accentHex, ACCENT_PRESETS, DEFAULT_ACCENT_HUE, brandSvg,
+  oklchToHex, accentHex, ACCENT_PRESETS, DEFAULT_ACCENT_HUE, brandSvg, versionText, versionParts,
 } from '../../src/web/state.js';
 
 const wire = (name: string, extra: Record<string, unknown> = {}) => ({

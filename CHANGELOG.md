@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Fix: the version shown in the web UI and by `--version` came from `package.json` when tuinnel-plus started, so a build could show a newer version than it was built from. The version is now fixed when tuinnel-plus is built, and a build made from anything other than a release also shows its commit, for example `v0.1.4 (702daf5)`
+- Fix: the version shown in the web UI and by `--version` came from `package.json` when tuinnel-plus started, so a build could show a newer version than it was built from. The version is now fixed when tuinnel-plus is built, and a build made from anything other than a release also shows its commit, for example `0.1.4 (702daf5)` from `--version`
 - The release and CI workflows use the Node 24 versions of GitHub's checkout and setup-node actions
 
 ## 0.1.4

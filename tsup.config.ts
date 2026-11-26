@@ -1,7 +1,7 @@
 // tsup.config.ts
 import { readFileSync } from 'fs';
 import { defineConfig } from 'tsup';
-import { buildCommit, buildDefines, readGitState } from './src/build-info';
+import { buildCommit, buildDefines, readGitState } from './src/build-info.js';
 
 const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf-8'));
 
@@ -18,7 +18,8 @@ export default defineConfig({
   // Known warning: "isDeepStrictEqual imported from external module util but never used"
   // comes from the @inkjs/ui barrel; the import is eliminated, so it's cosmetic.
   treeshake: true,
-  // The version and commit this build came from; see src/version.ts.
+  // The version and commit this build came from; see src/version.ts. Read once when the build
+  // starts, so `bun run dev` (watch mode) keeps the commit it started at.
   define: buildDefines({ version, commit: buildCommit(readGitState(version)) }),
   // The web UI is plain static files; ship them next to the bundle.
   onSuccess: 'rm -rf dist/web && cp -R src/web dist/web',

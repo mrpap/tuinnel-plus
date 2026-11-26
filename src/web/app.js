@@ -1105,7 +1105,8 @@ function settingsView(root) {
   return {
     update() {
       drawTheme();
-      aboutVersion.textContent = daemonStatus ? `tuinnel-plus ${versionText(daemonStatus)}` : '—';
+      const label = versionText(daemonStatus);
+      aboutVersion.textContent = label ? `tuinnel-plus ${label}` : '—';
     },
   };
 }

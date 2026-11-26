@@ -205,7 +205,7 @@ Check the setup with `tuinnel-plus doctor`. It verifies the config file, the tok
 
 Aliases: `start` = `up`, `stop` = `down`, `rm` = `remove`, `ls` = `list`.
 
-Flags: `--verbose` (global), `--json` (`list`, `status`, `zones`), `-v`/`--version`, `--help`.
+Flags: `--verbose` (global), `--json` (`list`, `status`, `zones`), `-v`/`--version`, `--help`. A build that isn't a release adds its commit to the version, for example `0.1.4 (702daf5)`.
 
 `purge` never deletes a tunnel that has live connections, since that tunnel is running somewhere else (another machine using the same Cloudflare account, for example).
 

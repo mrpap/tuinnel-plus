@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { StatusMessage, TextInput } from '@inkjs/ui';
 import { Modal } from './Modal.js';
@@ -23,11 +23,26 @@ export function AddWizard({ defaultZone, zones, onSubmit, onCancel }: AddWizardP
     const i = zones.findIndex(z => z.name === defaultZone);
     return i >= 0 ? i : 0;
   });
+  // Refs, not state: a key typed just before Esc must count even before React re-renders
+  const touched = useRef(false);
+  const confirming = useRef(false);
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+  const dirty = () => touched.current || step !== 'port';
 
   useInput((input, key) => {
     if (key.escape) {
+      if (dirty() && !confirming.current) {
+        confirming.current = true;
+        setConfirmingDiscard(true);
+        return;
+      }
       onCancel();
       return;
+    }
+    if (!key.tab && !key.return) touched.current = true;
+    if (confirming.current) {
+      confirming.current = false;
+      setConfirmingDiscard(false);
     }
 
     // Zone step: own navigation + submit so Enter confirms whether or not the
@@ -89,6 +104,11 @@ export function AddWizard({ defaultZone, zones, onSubmit, onCancel }: AddWizardP
 
   return (
     <Modal title="Add Tunnel" visible>
+      {confirmingDiscard && (
+        <Box marginBottom={1}>
+          <Text color="yellow">Discard changes? Esc again to discard.</Text>
+        </Box>
+      )}
       <Box marginBottom={1}>
         <Text dimColor>Step {stepNumber} of {totalSteps}</Text>
       </Box>

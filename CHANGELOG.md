@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.4
+
+- `tuinnel-plus service install` now works on Linux too: it sets up a systemd user service that starts at boot and restarts if it crashes. It turns on lingering when your system allows it, so the service also runs on a headless machine where nobody logs in; otherwise it shows the one command to run. `service status` and `service uninstall` work on Linux as well
+- The README explains lingering for people who write their own systemd unit
+- Fix: `service install` said it had succeeded even when the service could not start, for example because tuinnel-plus was already running outside it; it now says so and tells you which process to stop (macOS and Linux)
+- The downloaded `cloudflared` is checked against the SHA-256 checksum GitHub publishes for it, and is not installed if it doesn't match
+- Fix: pressing Esc in the terminal dashboard's Add and Edit forms threw away what you had typed; it now asks first
+- Fix: signing out or changing the password did not stop live updates in browser tabs that were already open; those tabs now go back to the sign-in page, while the tab you changed the password in stays signed in
+- Fix: other websites could show the web UI inside a frame; browsers now refuse to
+- Fix: the subdomain for remote access to the web UI was not checked like other subdomains
+- Fix: the web UI offered to restart the tunnel it was reached through, which cut off your own connection; the button is gone, and such a restart is refused
+
 ## 0.1.3
 
 - Fix: buttons and menu entries in the web UI sometimes needed a second click while tunnels were busy

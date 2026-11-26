@@ -4,7 +4,7 @@ import { render } from 'ink-testing-library';
 import { App } from '../../src/tui/App.js';
 import type { TunnelRuntime } from '../../src/types.js';
 import { EventEmitter } from 'events';
-import { press } from './wait.js';
+import { press, waitFor } from './wait.js';
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -74,8 +74,7 @@ describe('stateChange render coalescing', () => {
     await delay(30);
     expect(lastFrame()).not.toContain('Registered tunnel connection');
 
-    // Flushed after the coalescing window.
-    await delay(220);
-    expect(lastFrame()).toContain('Registered tunnel connection');
+    // Flushed after the coalescing window (a slow runner may need longer than the window itself).
+    await waitFor(() => expect(lastFrame()).toContain('Registered tunnel connection'));
   });
 });

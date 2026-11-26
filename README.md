@@ -23,7 +23,7 @@ $ tuinnel-plus
 - **Background service** — `tuinnel-plus serve` owns the tunnels. The terminal dashboard, the CLI and the web UI are all clients of it, so closing any of them leaves your tunnels running
 - **Web UI** — Live tunnel list, details, logs and metrics, add/edit/delete/start/stop, light and dark theme, and an accent colour of your choice. Password-protected, bound to `127.0.0.1:8484` by default
 - **Remote access (optional)** — Publish the web UI on a subdomain through its own tunnel, behind your password
-- **Starts at login (macOS)** — `tuinnel-plus service install` registers a launchd agent
+- **Starts at login or boot** — `tuinnel-plus service install` registers a launchd agent on macOS or a systemd user service on Linux
 - **Terminal dashboard** — Sidebar with fuzzy search, log filtering and scroll-back, command palette (`Ctrl+K`)
 - **Custom domains** — Map local ports to subdomains on domains you own (`app.mysite.com`, `api.mysite.com`)
 - **Quick tunnels** — Zero-config tunnels via `trycloudflare.com` (no account needed)
@@ -76,21 +76,30 @@ tuinnel-plus up 3000 --quick
 
 Quick tunnels run in the foreground and stop with `Ctrl+C`.
 
-### Run it at login (macOS)
+### Run it at login or boot
 
 ```bash
-tuinnel-plus service install     # start now and at every login
+tuinnel-plus service install     # start now, and again after every login or reboot
 tuinnel-plus service status
 tuinnel-plus service uninstall
 ```
 
-On Linux, run `tuinnel-plus serve` under your own process manager. A systemd user unit, for example:
+On macOS this registers a launchd agent that starts at login. On Linux it installs a systemd user service (`~/.config/systemd/user/tuinnel-plus.service`).
+
+A systemd user service normally only runs while you are logged in. To start it at boot on a headless machine, systemd needs *lingering* for your user. `service install` turns it on when your system allows that without a password; otherwise it prints the command to run once:
+
+```bash
+sudo loginctl enable-linger $USER
+```
+
+Logs go to `~/.tuinnel/logs/daemon.log` (on systemd older than 240 they go to the journal: `journalctl --user -u tuinnel-plus`).
+
+Prefer your own setup? Run `tuinnel-plus serve` under any process manager. A hand-written systemd user unit, for example:
 
 ```ini
 # ~/.config/systemd/user/tuinnel-plus.service
 [Unit]
 Description=tuinnel-plus
-After=network-online.target
 
 [Service]
 ExecStart=/usr/bin/env tuinnel-plus serve
@@ -102,6 +111,7 @@ WantedBy=default.target
 
 ```bash
 systemctl --user enable --now tuinnel-plus
+sudo loginctl enable-linger $USER   # start at boot, without a login
 ```
 
 ## The background service and web UI
@@ -128,7 +138,7 @@ This creates a tunnel to the web UI itself, so you can reach it at `https://admi
 - Browser sessions need the password. Login attempts are rate-limited per client IP, and the session cookie is `HttpOnly`, `SameSite=Lax`, and `Secure` when reached through Cloudflare.
 - The first password can only be set from this machine, never through the remote-access tunnel.
 - State-changing requests from the browser must be same-origin JSON, so other websites can't act on your behalf.
-- The config file, `daemon.json` and the launchd agent file are written with `0600` permissions.
+- The config file, `daemon.json`, the launchd agent file and the systemd service's environment file are written with `0600` permissions.
 - For stronger protection of the remote web UI, put [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) in front of its hostname.
 
 ## Creating a Cloudflare API token
@@ -189,7 +199,7 @@ Check the setup with `tuinnel-plus doctor`. It verifies the config file, the tok
 | `tuinnel-plus doctor` | Run diagnostics |
 | `tuinnel-plus purge` | Find and delete leftover Cloudflare tunnels that have no local config entry |
 | `tuinnel-plus serve` | Run the background service in the foreground |
-| `tuinnel-plus service install\|uninstall\|status` | Manage the macOS login item |
+| `tuinnel-plus service install\|uninstall\|status` | Run the service at login (macOS) or boot (Linux) |
 | `tuinnel-plus password set` | Set or change the web UI password |
 | `tuinnel-plus expose` | Publish the web UI through Cloudflare (`--off` to stop) |
 

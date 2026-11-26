@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, chmodSync, readFileSync, writeFileSync, unlinkSync, renameSync, createWriteStream } from 'fs';
 import { join } from 'path';
 import { execSync, execFileSync } from 'child_process';
+import { createHash } from 'crypto';
 import { pipeline } from 'stream/promises';
 import { Readable } from 'stream';
 import { resolveStateDir } from '../config/paths.js';
@@ -16,7 +17,7 @@ const ASSET_MAP: Record<string, string> = {
   'linux-x64': 'cloudflared-linux-amd64',
 };
 
-const DOWNLOAD_BASE = 'https://github.com/cloudflare/cloudflared/releases/latest/download';
+const DOWNLOAD_BASE = 'https://github.com/cloudflare/cloudflared/releases/download';
 const GITHUB_API_LATEST = 'https://api.github.com/repos/cloudflare/cloudflared/releases/latest';
 
 export function getAssetName(): string {
@@ -54,16 +55,31 @@ export function getInstalledVersion(): string | null {
   }
 }
 
-export async function getLatestVersion(): Promise<string> {
+export interface Release {
+  version: string;
+  tag: string;
+  /** `digest` is GitHub's `sha256:<hex>` for the downloadable file, when published. */
+  assets: Array<{ name: string; digest: string | null }>;
+}
+
+export async function getLatestRelease(): Promise<Release> {
   const res = await fetch(GITHUB_API_LATEST, {
     headers: { 'Accept': 'application/vnd.github.v3+json' },
   });
   if (!res.ok) {
     throw new Error(`Failed to fetch latest release: ${res.status} ${res.statusText}`);
   }
-  const data = await res.json() as { tag_name: string };
-  // tag_name is like "2025.8.0" or "v2025.8.0"
-  return data.tag_name.replace(/^v/, '');
+  const data = await res.json() as { tag_name: string; assets?: Array<{ name: string; digest?: string | null }> };
+  return {
+    // tag_name is like "2025.8.0" or "v2025.8.0"
+    version: data.tag_name.replace(/^v/, ''),
+    tag: data.tag_name,
+    assets: (data.assets ?? []).map((a) => ({ name: a.name, digest: a.digest ?? null })),
+  };
+}
+
+export async function getLatestVersion(): Promise<string> {
+  return (await getLatestRelease()).version;
 }
 
 export function isUpdateAvailable(installed: string, latest: string): boolean {
@@ -74,10 +90,17 @@ export async function downloadBinary(
   onProgress?: (downloaded: number, total: number | null) => void,
 ): Promise<string> {
   const asset = getAssetName();
-  const url = `${DOWNLOAD_BASE}/${asset}`;
-
-  // Fetch version once upfront (reused for version file at the end)
-  const version = await getLatestVersion();
+  // One lookup decides both what we download and the checksum it must match.
+  const release = await getLatestRelease();
+  const version = release.version;
+  const expected = /^sha256:([0-9a-f]{64})$/i.exec(release.assets.find((a) => a.name === asset)?.digest ?? '')?.[1];
+  if (!expected) {
+    throw new Error(
+      `GitHub did not publish a SHA-256 digest for ${asset} ${release.tag}; refusing to install an unverified binary. ` +
+      'Set TUINNEL_CLOUDFLARED to use your own cloudflared instead.',
+    );
+  }
+  const url = `${DOWNLOAD_BASE}/${release.tag}/${asset}`;
 
   if (!existsSync(BIN_DIR)) {
     mkdirSync(BIN_DIR, { recursive: true });
@@ -94,6 +117,7 @@ export async function downloadBinary(
   const contentLength = res.headers.get('content-length');
   const total = contentLength ? parseInt(contentLength, 10) : null;
   let downloaded = 0;
+  const hash = createHash('sha256');
 
   const body = res.body;
   if (!body) {
@@ -112,6 +136,7 @@ export async function downloadBinary(
         return;
       }
       downloaded += value.byteLength;
+      hash.update(value);
       if (onProgress) onProgress(downloaded, total);
       controller.enqueue(value);
     },
@@ -122,7 +147,11 @@ export async function downloadBinary(
     writeStream,
   );
 
-  // Binary integrity verified by HTTPS transport + cloudflared's own validation
+  // Check the file against the digest GitHub publishes for the release asset
+  if (hash.digest('hex') !== expected.toLowerCase()) {
+    unlinkSync(tmpPath);
+    throw new Error('Downloaded cloudflared failed verification (SHA-256 mismatch); nothing was installed.');
+  }
 
   // Extract or move binary
   if (isTarball(asset)) {

@@ -177,11 +177,11 @@ program
 // tuinnel-plus service install|uninstall|status
 const service = program
   .command('service')
-  .description('Run the background service at login (macOS launchd)');
+  .description('Run the background service at login or boot (macOS launchd, Linux systemd)');
 
 service
   .command('install')
-  .description('Install and start the launchd agent')
+  .description('Install and start the service')
   .action(async () => {
     const { serviceInstallCommand } = await import('./commands/service.js');
     await serviceInstallCommand();
@@ -189,7 +189,7 @@ service
 
 service
   .command('uninstall')
-  .description('Stop and remove the launchd agent')
+  .description('Stop and remove the service')
   .action(async () => {
     const { serviceUninstallCommand } = await import('./commands/service.js');
     await serviceUninstallCommand();
@@ -197,7 +197,7 @@ service
 
 service
   .command('status')
-  .description('Show whether the launchd agent is loaded and running')
+  .description('Show whether the service is installed and running')
   .action(async () => {
     const { serviceStatusCommand } = await import('./commands/service.js');
     await serviceStatusCommand();

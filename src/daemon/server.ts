@@ -6,7 +6,7 @@ import { registerMetaRoutes } from './routes/meta.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerSettingsRoutes } from './routes/settings.js';
 import { serveStatic } from './static.js';
-import { isSameOriginJson } from './guard.js';
+import { isSameOriginJson, sessionId } from './guard.js';
 import type { TunnelBackend } from '../services/backend.js';
 import type { SseHub } from './sse.js';
 import type { TunnelMetrics } from '../types.js';
@@ -116,12 +116,18 @@ export function createDaemonServer(deps: DaemonDeps): { server: Server; router: 
   registerAuthRoutes(router, deps);
   registerSettingsRoutes(router, deps);
   registerTunnelRoutes(router, deps);
-  router.add('GET', '/api/events', ({ res }) => {
+  router.add('GET', '/api/events', ({ req, res }) => {
     if (!deps.hub) throw new HttpError(404, 'Not found');
-    deps.hub.attach(res);
+    // Browser streams belong to their session and end with it; local clients use the bearer token.
+    const browser = !/^Bearer /.test(req.headers.authorization ?? '');
+    deps.hub.attach(res, browser ? sessionId(req) : null);
   });
 
   const server = createServer(async (req, res) => {
+    // No other site may frame the web UI (clickjacking), and browsers must trust our content types.
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     try {
       const host = req.headers.host ?? '';
       if (!deps.allowedHosts().includes(host)) {

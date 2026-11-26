@@ -3,9 +3,10 @@ import { mkdtempSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
-  LAUNCHD_LABEL, plistPath, buildPlist, serviceEnv, installService, uninstallService, serviceStatus,
+  LAUNCHD_LABEL, plistPath, buildPlist, installService, uninstallService, serviceStatus,
   defaultDeps, type LaunchdDeps,
 } from '../../src/service/launchd.js';
+import { serviceEnv } from '../../src/service/install-args.js';
 
 const opts = {
   programArgs: ['/usr/local/bin/node', '/opt/tp/dist/index.js', 'serve'],
@@ -22,6 +23,7 @@ function fakeDeps(over: Partial<LaunchdDeps> = {}) {
     removeFile: (p) => { calls.push(`rm ${p}`); files.delete(p); },
     exists: (p) => files.has(p),
     mkdir: () => {},
+    sleep: async () => {},
     uid: 501,
     home: '/Users/me',
     ...over,
@@ -86,8 +88,41 @@ describe('launchd install/uninstall/status', () => {
       `write ${plist}`,
       'launchctl bootout gui/501/io.github.mrpap.tuinnel-plus',
       `launchctl bootstrap gui/501 ${plist}`,
+      'launchctl print gui/501/io.github.mrpap.tuinnel-plus',
     ]);
     expect(files.get(plist)).toContain('io.github.mrpap.tuinnel-plus');
+  });
+
+  const PRINT = 'launchctl print gui/501/io.github.mrpap.tuinnel-plus';
+  const printing = (stdout: string) => ({
+    exec: async (c: string, args: string[]) => ([c, ...args].join(' ') === PRINT ? { code: 0, stdout } : { code: 0, stdout: '' }),
+  });
+
+  test('install reports a service that is up a few seconds later', async () => {
+    const { deps } = fakeDeps(printing('gui/501/x = {\n\tstate = running\n\truns = 1\n\tpid = 99\n\tlast exit code = (never exited)\n}'));
+    expect(await installService(opts, deps)).toEqual({
+      path: '/Users/me/Library/LaunchAgents/io.github.mrpap.tuinnel-plus.plist', running: true,
+    });
+  });
+
+  test('install reports a service that exited (e.g. the port was taken)', async () => {
+    const { deps } = fakeDeps(printing('gui/501/x = {\n\tstate = not running\n\truns = 1\n\tlast exit code = 1\n}'));
+    expect((await installService(opts, deps)).running).toBe(false);
+  });
+
+  test('install reports a service that already crashed and was restarted', async () => {
+    const { deps } = fakeDeps(printing('gui/501/x = {\n\tstate = running\n\truns = 2\n\tpid = 99\n\tlast exit code = 1\n}'));
+    expect((await installService(opts, deps)).running).toBe(false);
+  });
+
+  test('install waits before checking', async () => {
+    const order: string[] = [];
+    const { deps } = fakeDeps({
+      exec: async (c, args) => { order.push([c, ...args].join(' ')); return { code: 0, stdout: '' }; },
+      sleep: async (ms) => { order.push(`sleep ${ms}`); },
+    });
+    await installService(opts, deps);
+    expect(order.slice(-2)).toEqual(['sleep 3000', PRINT]);
   });
 
   test('install fails loudly when bootstrap fails', async () => {

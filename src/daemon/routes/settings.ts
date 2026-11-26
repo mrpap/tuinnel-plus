@@ -1,13 +1,19 @@
 import { z } from 'zod';
 import { hashPassword, verifyPassword, MIN_PASSWORD_LENGTH } from '../auth.js';
-import { sessionCookie } from '../guard.js';
+import { sessionCookie, sessionId } from '../guard.js';
 import { HttpError, sendJson, type DaemonDeps } from '../server.js';
 import type { Router } from '../router.js';
 import { webSettings } from '../../config/web.js';
 import { WebConfigSchema } from '../../config/schema.js';
+import { subdomain } from './tunnels.js';
 
 const SelfExposeBody = z.discriminatedUnion('enabled', [
-  z.object({ enabled: z.literal(true), subdomain: z.string().min(1), zone: z.string().min(1) }),
+  z.object({
+    enabled: z.literal(true),
+    // Same rule as any tunnel's subdomain, after the trimming and lowercasing the route always did
+    subdomain: z.preprocess((v) => (typeof v === 'string' ? v.trim().toLowerCase() : v), subdomain),
+    zone: z.string().min(1),
+  }),
   z.object({ enabled: z.literal(false) }),
 ]);
 
@@ -44,7 +50,7 @@ export function registerSettingsRoutes(router: Router, deps: DaemonDeps): void {
 
   router.add('PUT', '/api/settings/self-expose', async ({ res, body }) => {
     const input = SelfExposeBody.parse(await body());
-    if (input.enabled) await selfExpose().enable(input.subdomain.trim().toLowerCase(), input.zone.trim());
+    if (input.enabled) await selfExpose().enable(input.subdomain, input.zone.trim());
     else await selfExpose().disable();
     sendJson(res, 200, selfExpose().status());
   });
@@ -61,7 +67,12 @@ export function registerSettingsRoutes(router: Router, deps: DaemonDeps): void {
     config.web = { ...config.web, passwordHash: hashPassword(next) };
     store.write(config);
     sessions.revokeAll();
-    res.setHeader('Set-Cookie', sessionCookie(sessions.create(), req));
+    const fresh = sessions.create();
+    // The browser that made the change keeps its live updates; every other one is signed out.
+    const own = /^Bearer /.test(req.headers.authorization ?? '') ? null : sessionId(req);
+    if (own) deps.hub?.moveSession(own, fresh);
+    deps.hub?.dropInvalidSessions();
+    res.setHeader('Set-Cookie', sessionCookie(fresh, req));
     sendJson(res, 200, { ok: true });
   });
 
@@ -69,6 +80,7 @@ export function registerSettingsRoutes(router: Router, deps: DaemonDeps): void {
   router.add('POST', '/api/settings/password/reload', ({ req, res }) => {
     if (!/^Bearer /.test(req.headers.authorization ?? '')) throw new HttpError(403, 'Local clients only.');
     auth().sessions.revokeAll();
+    deps.hub?.dropInvalidSessions();
     res.writeHead(204);
     res.end();
   });

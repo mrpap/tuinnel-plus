@@ -153,3 +153,32 @@ describe('errorStatus', () => {
     expect(errorStatus(new Error('Zone "nope.com" not found in your Cloudflare account.'))).toBe(400);
   });
 });
+
+describe('restarting the tunnel that serves the web UI', () => {
+  const tunneled = { 'cf-connecting-ip': '203.0.113.9' };
+  const system = { isSystemTunnel: (n: string) => n === 'admin' };
+
+  test('through that tunnel it is refused', async () => {
+    const backend = new FakeBackend('admin');
+    const port = await boot(backend, system);
+    const res = await raw(port, { method: 'POST', path: '/api/tunnels/admin/restart', headers: tunneled, body: {} });
+    expect(res.status).toBe(409);
+    expect(res.json.error).toBe("Restarting this tunnel would cut off the connection you're using. Restart it from the machine running tuinnel-plus.");
+    expect(backend.calls).not.toContain('restart');
+  });
+
+  test('a local request may still restart it', async () => {
+    const backend = new FakeBackend('admin');
+    const port = await boot(backend, system);
+    const res = await raw(port, { method: 'POST', path: '/api/tunnels/admin/restart', body: {} });
+    expect(res.status).toBe(200);
+    expect(backend.calls).toContain('restart');
+  });
+
+  test('other tunnels restart fine through the tunnel', async () => {
+    const backend = new FakeBackend('admin', 'app');
+    const port = await boot(backend, system);
+    const res = await raw(port, { method: 'POST', path: '/api/tunnels/app/restart', headers: tunneled, body: {} });
+    expect(res.status).toBe(200);
+  });
+});

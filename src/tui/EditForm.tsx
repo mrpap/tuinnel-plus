@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { StatusMessage, TextInput } from '@inkjs/ui';
 import { Modal } from './Modal.js';
@@ -22,13 +22,28 @@ export function EditForm({ tunnel, zones, onSubmit, onCancel }: EditFormProps) {
     return idx >= 0 ? idx : 0;
   });
   const [error, setError] = useState<string | null>(null);
+  // Refs, not state: a key typed just before Esc must count even before React re-renders
+  const touched = useRef(false);
+  const confirming = useRef(false);
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+  const dirty = () => touched.current;
 
   const activeIndex = FIELDS.indexOf(activeField);
 
   useInput((input, key) => {
     if (key.escape) {
+      if (dirty() && !confirming.current) {
+        confirming.current = true;
+        setConfirmingDiscard(true);
+        return;
+      }
       onCancel();
       return;
+    }
+    if (!key.tab && !key.return) touched.current = true;
+    if (confirming.current) {
+      confirming.current = false;
+      setConfirmingDiscard(false);
     }
 
     if (key.tab) {
@@ -114,6 +129,11 @@ export function EditForm({ tunnel, zones, onSubmit, onCancel }: EditFormProps) {
   return (
     <Modal title={`Edit: ${tunnel.name}`} visible>
       <Box flexDirection="column">
+        {confirmingDiscard && (
+          <Box marginBottom={1}>
+            <Text color="yellow">Discard changes? Esc again to discard.</Text>
+          </Box>
+        )}
         {error && (
           <Box marginBottom={1}>
             <StatusMessage variant="error">{error}</StatusMessage>

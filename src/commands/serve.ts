@@ -86,7 +86,7 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     // The self-expose tunnel points at the port we actually bind, set after listen.
     let selfExpose = new SelfExpose(service, store, wantedPort);
     const isSystemTunnel = (name: string) => selfExpose.isSystemTunnel(name);
-    const hub = new SseHub(service, { isSystemTunnel });
+    const hub = new SseHub(service, { isSystemTunnel, sessionValid: (id) => sessions.valid(id) });
     const { server } = createDaemonServer({
       service,
       guard: createGuard({ localToken, sessions, ownHosts: () => allowedHostsFor(host, port, selfExpose.status()) }),

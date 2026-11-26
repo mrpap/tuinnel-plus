@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach, mock, spyOn } from 'bun:
 import * as fs from 'fs';
 import * as childProcess from 'child_process';
 import { PassThrough } from 'stream';
+import { createHash } from 'crypto';
 
 // Save originals
 const originalFetch = globalThis.fetch;
@@ -39,6 +40,13 @@ function mockJsonResponse(body: unknown, status = 200) {
     status,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+const ASSETS = ['cloudflared-darwin-arm64.tgz', 'cloudflared-darwin-amd64.tgz', 'cloudflared-linux-arm64', 'cloudflared-linux-amd64'];
+
+/** GitHub's latest-release JSON, with each asset's SHA-256 digest set to that of `data`. */
+function mockRelease(data: Uint8Array, tag = '2025.9.0', digest: string | null = `sha256:${createHash('sha256').update(data).digest('hex')}`) {
+  return mockJsonResponse({ tag_name: tag, assets: ASSETS.map((name) => ({ name, digest })) });
 }
 
 describe('binary.ts', () => {
@@ -292,7 +300,7 @@ describe('binary.ts', () => {
       globalThis.fetch = async (input: string | URL | Request) => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.includes('api.github.com')) {
-          return mockJsonResponse({ tag_name: '2025.9.0' });
+          return mockRelease(new Uint8Array([1, 2, 3, 4]));
         }
         return mockDownloadResponse(new Uint8Array([1, 2, 3, 4]), 200, { 'Content-Length': '4' });
       };
@@ -314,7 +322,7 @@ describe('binary.ts', () => {
       globalThis.fetch = async (input: string | URL | Request) => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.includes('api.github.com')) {
-          return mockJsonResponse({ tag_name: '2025.9.0' });
+          return mockRelease(new Uint8Array([1, 2, 3, 4]));
         }
         return mockDownloadResponse(new Uint8Array([1, 2, 3, 4]), 200, { 'Content-Length': '4' });
       };
@@ -336,7 +344,7 @@ describe('binary.ts', () => {
       globalThis.fetch = async (input: string | URL | Request) => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.includes('api.github.com')) {
-          return mockJsonResponse({ tag_name: '2025.9.0' });
+          return mockRelease(new Uint8Array([1, 2]));
         }
         return mockDownloadResponse(new Uint8Array([1, 2]), 200);
       };
@@ -356,7 +364,7 @@ describe('binary.ts', () => {
       globalThis.fetch = async (input: string | URL | Request) => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.includes('api.github.com')) {
-          return mockJsonResponse({ tag_name: '2025.9.0' });
+          return mockRelease(new Uint8Array([1, 2]));
         }
         return mockDownloadResponse(new Uint8Array([1, 2]), 200);
       };
@@ -376,7 +384,7 @@ describe('binary.ts', () => {
       globalThis.fetch = async (input: string | URL | Request) => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.includes('api.github.com')) {
-          return mockJsonResponse({ tag_name: '2025.9.0' });
+          return mockRelease(new Uint8Array([]));
         }
         throw new Error('Network failure');
       };
@@ -391,7 +399,7 @@ describe('binary.ts', () => {
       globalThis.fetch = async (input: string | URL | Request) => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.includes('api.github.com')) {
-          return mockJsonResponse({ tag_name: '2025.9.0' });
+          return mockRelease(new Uint8Array([]));
         }
         return new Response('Not Found', { status: 404, statusText: 'Not Found' });
       };
@@ -406,7 +414,7 @@ describe('binary.ts', () => {
       globalThis.fetch = async (input: string | URL | Request) => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.includes('api.github.com')) {
-          return mockJsonResponse({ tag_name: '2025.9.0' });
+          return mockRelease(new Uint8Array([1, 2, 3]));
         }
         return mockDownloadResponse(new Uint8Array([1, 2, 3]), 200);
       };
@@ -422,7 +430,7 @@ describe('binary.ts', () => {
       globalThis.fetch = async (input: string | URL | Request) => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.includes('api.github.com')) {
-          return mockJsonResponse({ tag_name: '2025.9.0' });
+          return mockRelease(new Uint8Array([1, 2, 3, 4]));
         }
         return mockDownloadResponse(new Uint8Array([1, 2, 3, 4]), 200, { 'Content-Length': '4' });
       };
@@ -445,7 +453,7 @@ describe('binary.ts', () => {
       globalThis.fetch = async (input: string | URL | Request) => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.includes('api.github.com')) {
-          return mockJsonResponse({ tag_name: '2025.9.0' });
+          return mockRelease(new Uint8Array([1, 2]));
         }
         return mockDownloadResponse(new Uint8Array([1, 2]), 200);
       };
@@ -466,7 +474,7 @@ describe('binary.ts', () => {
       globalThis.fetch = async (input: string | URL | Request) => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.includes('api.github.com')) {
-          return mockJsonResponse({ tag_name: '2025.9.0' });
+          return mockRelease(new Uint8Array([]));
         }
         return new Response(null, { status: 200 });
       };
@@ -490,6 +498,71 @@ describe('binary.ts', () => {
 
     test('VERSION_FILE ends with .version', () => {
       expect(binaryModule.VERSION_FILE).toEndWith('.version');
+    });
+  });
+  describe('verified downloads', () => {
+    const DATA = new Uint8Array([9, 8, 7, 6]);
+    let spies: Array<ReturnType<typeof spyOn>> = [];
+    let urls: string[] = [];
+
+    beforeEach(() => {
+      setPlatform('linux');
+      setArch('arm64');
+      urls = [];
+      spies = [
+        spyOn(fs, 'existsSync').mockReturnValue(true),
+        spyOn(fs, 'mkdirSync').mockReturnValue(undefined as any),
+        spyOn(fs, 'chmodSync').mockReturnValue(undefined as any),
+        spyOn(fs, 'writeFileSync').mockReturnValue(undefined as any),
+        spyOn(fs, 'unlinkSync').mockReturnValue(undefined as any),
+        spyOn(fs, 'renameSync').mockReturnValue(undefined as any),
+        spyOn(fs, 'createWriteStream').mockImplementation(() => {
+          const pt = new PassThrough();
+          pt.on('data', () => {});
+          return pt as any;
+        }),
+      ];
+    });
+
+    afterEach(() => { for (const s of spies) s.mockRestore(); });
+
+    function serve(release: Response) {
+      globalThis.fetch = async (input: string | URL | Request) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        urls.push(url);
+        if (url.includes('api.github.com')) return release;
+        return mockDownloadResponse(DATA, 200);
+      };
+    }
+
+    test('downloads the exact release it looked up', async () => {
+      serve(mockRelease(DATA, '2026.11.2'));
+      await binaryModule.downloadBinary();
+      expect(urls[1]).toBe('https://github.com/cloudflare/cloudflared/releases/download/2026.11.2/cloudflared-linux-arm64');
+    });
+
+    test('installs when the SHA-256 matches', async () => {
+      serve(mockRelease(DATA));
+      await expect(binaryModule.downloadBinary()).resolves.toEndWith('/cloudflared');
+      expect((fs.renameSync as any).mock.calls.length).toBe(1);
+    });
+
+    test('refuses and removes the file when the SHA-256 differs', async () => {
+      serve(mockRelease(new Uint8Array([1, 1, 1])));
+      await expect(binaryModule.downloadBinary()).rejects.toThrow(
+        'Downloaded cloudflared failed verification (SHA-256 mismatch); nothing was installed.',
+      );
+      expect((fs.unlinkSync as any).mock.calls.some((c: any[]) => String(c[0]).endsWith('.tmp'))).toBe(true);
+      expect((fs.renameSync as any).mock.calls.length).toBe(0);
+      expect((fs.writeFileSync as any).mock.calls.length).toBe(0);
+    });
+
+    test('refuses when GitHub publishes no digest', async () => {
+      serve(mockRelease(DATA, '2025.9.0', null));
+      const err = await binaryModule.downloadBinary().catch((e: Error) => e);
+      expect(String(err)).toContain('refusing to install an unverified binary');
+      expect(String(err)).toContain('TUINNEL_CLOUDFLARED');
+      expect(urls.length).toBe(1); // never downloaded
     });
   });
 });

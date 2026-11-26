@@ -7,6 +7,9 @@ export const SYSTEMD_UNIT = 'tuinnel-plus.service';
 
 const HEADER = '# Written by tuinnel-plus service install.';
 
+/** How long a freshly restarted service must survive before install calls it running. */
+const SETTLE_MS = 3000;
+
 /** `StandardOutput=append:` arrived in systemd 240; older versions log to the journal. */
 const APPEND_LOG_MIN_VERSION = 240;
 
@@ -24,6 +27,7 @@ export interface SystemdDeps {
   removeFile(path: string): void;
   exists(path: string): boolean;
   mkdir(path: string): void;
+  sleep(ms: number): Promise<void>;
   user: string;
   home: string;
 }
@@ -46,6 +50,7 @@ export const defaultDeps: SystemdDeps = {
   removeFile: (p) => unlinkSync(p),
   exists: (p) => existsSync(p),
   mkdir: (p) => mkdirSync(p, { recursive: true }),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   user: userInfo().username,
   home: homedir(),
 };
@@ -112,6 +117,8 @@ export interface InstallResult {
   linger: 'on' | 'enabled' | 'needs-sudo';
   /** Where output goes, or null when it goes to the journal. */
   logFile: string | null;
+  /** Still active, without restarts, a few seconds after starting. */
+  running: boolean;
 }
 
 export async function installService(
@@ -141,12 +148,18 @@ export async function installService(
   // restart, not start: an already-running unit must pick up the new ExecStart
   await must(systemctl(deps, 'restart', SYSTEMD_UNIT), 'systemctl --user restart');
 
+  // restart returns once the process is forked; a serve that exits at once (port taken by a
+  // daemon the dashboard started, say) only shows up as restarts or a failed state.
+  await deps.sleep(SETTLE_MS);
+  const health = await systemctl(deps, 'show', SYSTEMD_UNIT, '-p', 'ActiveState', '-p', 'NRestarts');
+  const running = /^ActiveState=active$/m.test(health.stdout) && /^NRestarts=0$/m.test(health.stdout);
+
   let linger: InstallResult['linger'] = 'on';
   if (!(await lingerOn(deps))) {
     const r = await deps.exec('loginctl', ['enable-linger', '--no-ask-password', deps.user]);
     linger = r.code === 0 ? 'enabled' : 'needs-sudo';
   }
-  return { unitPath: path, replaced, linger, logFile };
+  return { unitPath: path, replaced, linger, logFile, running };
 }
 
 export async function uninstallService(

@@ -3,7 +3,7 @@ import { platformService, linuxInstallMessages } from '../../src/commands/servic
 
 const DASH = 'The service starts at boot and restarts if it crashes. Dashboard: http://127.0.0.1:8484';
 const UNIT = '/home/me/.config/systemd/user/tuinnel-plus.service';
-const base = { unitPath: UNIT, replaced: false, linger: 'on' as const, logFile: '/home/me/.tuinnel/logs/daemon.log' };
+const base = { unitPath: UNIT, replaced: false, linger: 'on' as const, logFile: '/home/me/.tuinnel/logs/daemon.log', running: true };
 
 describe('platformService', () => {
   test('launchd on macOS, systemd on Linux, nothing elsewhere', () => {
@@ -37,6 +37,23 @@ describe('linuxInstallMessages', () => {
     expect(linuxInstallMessages({ ...base, linger: 'needs-sudo' }, 'me', DASH)).toContainEqual({
       level: 'warn',
       text: 'Lingering is off, so the service only runs while you are logged in. To start it at boot, run:\n  sudo loginctl enable-linger me',
+    });
+  });
+
+  test('says so when the service did not stay running', () => {
+    const msgs = linuxInstallMessages({ ...base, running: false }, 'me', DASH);
+    expect(msgs[0]).toEqual({ level: 'warn', text: `Installed systemd user service: ${UNIT}, but it did not stay running.` });
+    expect(msgs).toContainEqual({
+      level: 'warn',
+      text: 'If tuinnel-plus is already running outside the service (for example started by the terminal dashboard), stop that process and run `tuinnel-plus service install` again. Details: `tuinnel-plus service status` and /home/me/.tuinnel/logs/daemon.log',
+    });
+    expect(msgs).not.toContainEqual({ level: 'info', text: DASH });
+  });
+
+  test('names the process to stop when one is running outside the service', () => {
+    expect(linuxInstallMessages({ ...base, running: false }, 'me', DASH, 4242)).toContainEqual({
+      level: 'warn',
+      text: 'tuinnel-plus is already running outside the service (pid 4242). Stop it with `kill 4242`, then run `tuinnel-plus service install` again.',
     });
   });
 

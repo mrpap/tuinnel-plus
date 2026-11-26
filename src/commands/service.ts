@@ -2,7 +2,7 @@ import { join } from 'path';
 import { fileStore } from '../config/store.js';
 import { resolveStateDir } from '../config/paths.js';
 import { webSettings } from '../config/web.js';
-import { daemonPaths } from '../daemon/descriptor.js';
+import { daemonPaths, readDescriptor } from '../daemon/descriptor.js';
 import * as launchd from '../service/launchd.js';
 import * as systemd from '../service/systemd.js';
 import { programArgsForCurrentInstall, serviceEnv } from '../service/install-args.js';
@@ -26,10 +26,31 @@ function requireSupported(): 'launchd' | 'systemd' | null {
 type Message = { level: 'success' | 'info' | 'warn'; text: string };
 
 /** What to tell the user after a Linux install. Pure, so the wording can be tested. */
-export function linuxInstallMessages(r: systemd.InstallResult, user: string, dashboardLine: string): Message[] {
-  const out: Message[] = [{ level: 'success', text: `Installed systemd user service: ${r.unitPath}` }];
+export function linuxInstallMessages(
+  r: systemd.InstallResult,
+  user: string,
+  dashboardLine: string,
+  /** A daemon found running outside the service, which is the usual reason it can't start. */
+  outsidePid: number | null = null,
+): Message[] {
+  const out: Message[] = r.running
+    ? [{ level: 'success', text: `Installed systemd user service: ${r.unitPath}` }]
+    : [{ level: 'warn', text: `Installed systemd user service: ${r.unitPath}, but it did not stay running.` }];
   if (r.replaced) out.push({ level: 'info', text: `Replaced the existing unit at ${r.unitPath}.` });
-  out.push({ level: 'info', text: dashboardLine });
+  if (!r.running) {
+    out.push(outsidePid
+      ? {
+        level: 'warn',
+        text: `tuinnel-plus is already running outside the service (pid ${outsidePid}). Stop it with \`kill ${outsidePid}\`, then run \`tuinnel-plus service install\` again.`,
+      }
+      : {
+        level: 'warn',
+        text: 'If tuinnel-plus is already running outside the service (for example started by the terminal dashboard), stop that process and run `tuinnel-plus service install` again. '
+          + `Details: \`tuinnel-plus service status\` and ${r.logFile ?? '`journalctl --user -u tuinnel-plus`'}`,
+      });
+  } else {
+    out.push({ level: 'info', text: dashboardLine });
+  }
   if (r.linger === 'enabled') {
     out.push({ level: 'info', text: `Enabled lingering for ${user}, so the service starts at boot without a login.` });
   } else if (r.linger === 'needs-sudo') {
@@ -43,6 +64,18 @@ export function linuxInstallMessages(r: systemd.InstallResult, user: string, das
 }
 
 const envFile = () => join(resolveStateDir(), 'service.env');
+
+/** The pid of a daemon that is up for this state directory, if any. */
+function runningDaemonPid(): number | null {
+  const d = readDescriptor(resolveStateDir());
+  if (!d) return null;
+  try {
+    process.kill(d.pid, 0);
+    return d.pid;
+  } catch {
+    return null;
+  }
+}
 
 export async function serviceInstallCommand(): Promise<void> {
   const kind = requireSupported();
@@ -62,7 +95,9 @@ export async function serviceInstallCommand(): Promise<void> {
     } else {
       const r = await systemd.installService({ ...common, envFile: envFile() });
       const line = `The service starts at boot and restarts if it crashes. ${dashboard}`;
-      for (const m of linuxInstallMessages(r, systemd.defaultDeps.user, line)) logger[m.level](m.text);
+      const outsidePid = r.running ? null : runningDaemonPid();
+      for (const m of linuxInstallMessages(r, systemd.defaultDeps.user, line, outsidePid)) logger[m.level](m.text);
+      if (!r.running) process.exitCode = 1;
     }
     if (!web.passwordHash) {
       logger.info('No dashboard password yet — set one with `tuinnel-plus password set`, or open the dashboard on this machine.');

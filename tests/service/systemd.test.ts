@@ -17,8 +17,12 @@ const opts = {
 
 type Reply = { code: number; stdout: string };
 
-/** Fake systemctl/loginctl: replies keyed by the command line, default success with no output. */
+const HEALTH = 'systemctl --user show tuinnel-plus.service -p ActiveState -p NRestarts';
+const HEALTHY: Reply = { code: 0, stdout: 'ActiveState=active\nNRestarts=0\n' };
+
+/** Fake systemctl/loginctl: replies keyed by the command line, default success with no output (a healthy service). */
 function fakeDeps(replies: Record<string, Reply> = {}, over: Partial<SystemdDeps> = {}) {
+  replies = { [HEALTH]: HEALTHY, ...replies };
   const calls: string[] = [];
   const files = new Map<string, string>();
   const deps: SystemdDeps = {
@@ -32,6 +36,7 @@ function fakeDeps(replies: Record<string, Reply> = {}, over: Partial<SystemdDeps
     removeFile: (p) => { calls.push(`rm ${p}`); files.delete(p); },
     exists: (p) => files.has(p),
     mkdir: () => {},
+    sleep: async () => {},
     user: 'me',
     home: '/home/me',
     ...over,
@@ -86,7 +91,7 @@ describe('installService', () => {
     });
     const r = await installService(opts, deps);
 
-    expect(r).toEqual({ unitPath: UNIT, replaced: false, linger: 'on', logFile: LOG });
+    expect(r).toEqual({ unitPath: UNIT, replaced: false, linger: 'on', logFile: LOG, running: true });
     expect(files.get(ENV_FILE)).toBe('PATH="/usr/bin:/bin"\nCLOUDFLARE_API_TOKEN="tok"\n');
     expect(files.get(UNIT)).toContain(`EnvironmentFile=${ENV_FILE}`);
     const systemctl = calls.filter((c) => c.startsWith('systemctl --user'));
@@ -95,6 +100,7 @@ describe('installService', () => {
       'systemctl --user daemon-reload',
       'systemctl --user enable tuinnel-plus.service',
       'systemctl --user restart tuinnel-plus.service',
+      HEALTH,
     ]);
     // The token file exists before the unit that points at it.
     expect(calls.indexOf(`write ${ENV_FILE}`)).toBeLessThan(calls.indexOf(`write ${UNIT}`));
@@ -120,6 +126,27 @@ describe('installService', () => {
   test('surfaces a failed restart', async () => {
     const { deps } = fakeDeps({ 'systemctl --user restart tuinnel-plus.service': { code: 1, stdout: 'boom' } });
     await expect(installService(opts, deps)).rejects.toThrow(/boom/);
+  });
+
+  test('reports a service that keeps crashing after the restart', async () => {
+    // e.g. `serve` exits at once because a daemon started by the dashboard already holds the port
+    const { deps } = fakeDeps({ [HEALTH]: { code: 0, stdout: 'ActiveState=activating\nNRestarts=1\n' }, [LINGER]: { code: 0, stdout: 'yes' } });
+    expect((await installService(opts, deps)).running).toBe(false);
+  });
+
+  test('reports a service that has already failed', async () => {
+    const { deps } = fakeDeps({ [HEALTH]: { code: 0, stdout: 'ActiveState=failed\nNRestarts=0\n' }, [LINGER]: { code: 0, stdout: 'yes' } });
+    expect((await installService(opts, deps)).running).toBe(false);
+  });
+
+  test('waits before checking, so a quick crash is caught', async () => {
+    const order: string[] = [];
+    const { deps } = fakeDeps({ [LINGER]: { code: 0, stdout: 'yes' } }, { sleep: async (ms) => { order.push(`sleep ${ms}`); } });
+    const exec = deps.exec;
+    deps.exec = async (cmd, args) => { order.push([cmd, ...args].join(' ')); return exec(cmd, args); };
+    await installService(opts, deps);
+    expect(order.indexOf('sleep 3000')).toBeGreaterThan(order.indexOf('systemctl --user restart tuinnel-plus.service'));
+    expect(order.indexOf(HEALTH)).toBeGreaterThan(order.indexOf('sleep 3000'));
   });
 
   test('systemd 239 → no append logging, logFile null', async () => {

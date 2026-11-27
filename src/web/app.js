@@ -935,17 +935,21 @@ function settingsView(root) {
   raSub.addEventListener('input', () => { raTouched = true; });
   raZone.addEventListener('change', () => { raTouched = true; });
   const syncRemoteAccess = () => {
+    // Until the settings have loaded, the form shows defaults: saving them would turn this off.
+    if (!raBusy) raSave.disabled = !remoteAccess;
+    drawUrl();
     if (raTouched || remoteAccess === raShown) return;
     raShown = remoteAccess;
     exposeOn = remoteAccess?.enabled ?? false;
     raSwitch.setAttribute('aria-checked', String(exposeOn));
     raSub.value = remoteAccess?.subdomain ?? '';
-    if (remoteAccess?.zone) {
-      if (![...raZone.options].some((o) => o.value === remoteAccess.zone)) raZone.append(h('option', { value: remoteAccess.zone }, `.${remoteAccess.zone}`));
-      raZone.value = remoteAccess.zone;
+    if (remoteAccess?.zone && ![...raZone.options].some((o) => o.value === remoteAccess.zone)) {
+      raZone.append(h('option', { value: remoteAccess.zone }, `.${remoteAccess.zone}`));
     }
-    drawUrl();
+    raZone.value = remoteAccess?.zone ?? '';
   };
+  let raBusy = false;
+  syncRemoteAccess();
   raSave.addEventListener('click', async () => {
     raError.textContent = '';
     raMsg.textContent = '';
@@ -954,6 +958,7 @@ function settingsView(root) {
       if (!check.ok) return void (raError.textContent = check.errors.subdomain ?? check.errors.zone);
     }
     raSave.disabled = true;
+    raBusy = true;
     try {
       await api('/api/settings/self-expose', {
         method: 'PUT',
@@ -961,15 +966,17 @@ function settingsView(root) {
       });
       await loadRemoteAccess();
       await loadSnapshot();
-      raShown = remoteAccess;
+      // Show what was saved, as the server normalised it.
       raTouched = false;
-      drawUrl();
+      raShown = null;
+      syncRemoteAccess();
       raMsg.textContent = 'Saved';
       setTimeout(() => { raMsg.textContent = ''; }, 1800);
     } catch (err) {
       raError.textContent = err.message;
     } finally {
-      raSave.disabled = false;
+      raBusy = false;
+      raSave.disabled = !remoteAccess;
     }
   });
 
@@ -1117,8 +1124,11 @@ function settingsView(root) {
             h('button', { class: 'btn danger', type: 'button', onclick: signOut }, icon('logout'), 'Sign out'))))));
 
   zoneNames().then((list) => {
+    // Keep a zone the user already picked; otherwise select the saved one.
+    const chosen = raTouched ? raZone.value : remoteAccess?.zone;
     if (remoteAccess?.zone && !list.includes(remoteAccess.zone)) list.push(remoteAccess.zone);
-    fill(raZone, list.map((z) => h('option', { value: z, selected: z === remoteAccess?.zone }, `.${z}`)));
+    if (chosen && !list.includes(chosen)) list.push(chosen);
+    fill(raZone, list.map((z) => h('option', { value: z, selected: z === chosen }, `.${z}`)));
   });
 
   return {

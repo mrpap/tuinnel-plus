@@ -8,6 +8,9 @@ import { SseParser } from './sse-parser.js';
 
 const MAX_EVENTS = 1000;
 
+const logKey = (name: string, timestamp: string, level: string, message: string) =>
+  JSON.stringify([name, timestamp, level, message]);
+
 interface Stream {
   ctrl: AbortController;
   /** Events held while the snapshot loads; null once they have been applied. */
@@ -20,6 +23,10 @@ export interface DaemonClientOptions {
   localToken: string;
   fetch?: typeof fetch;
   reconnectMs?: number;
+  /** Replace the event stream when nothing, not even a ping, arrives for this long. */
+  staleMs?: number;
+  /** Give up on a snapshot request after this long, and retry. */
+  requestTimeoutMs?: number;
   /**
    * Where the daemon is now. Each `serve` writes a new token (and may bind
    * another port), so reconnects re-read it rather than reuse the old one.
@@ -36,6 +43,8 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
   private cache = new Map<string, TunnelRuntime>();
   private fetchImpl: typeof fetch;
   private reconnectMs: number;
+  private staleMs: number;
+  private requestTimeoutMs: number;
   private closed = false;
   /** The event stream in use; any earlier one is aborted and its events ignored. */
   private stream: Stream | null = null;
@@ -45,6 +54,9 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     super();
     this.fetchImpl = opts.fetch ?? fetch;
     this.reconnectMs = opts.reconnectMs ?? 1000;
+    // The service pings every 25 s; two missed pings means the stream is dead.
+    this.staleMs = opts.staleMs ?? 60_000;
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? 15_000;
   }
 
   // -- Connection --
@@ -130,9 +142,10 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     return `/api/tunnels/${encodeURIComponent(name)}`;
   }
 
-  private async request<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
+  private async request<T = unknown>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     const res = await this.fetchImpl(this.opts.baseUrl + path, {
       method,
+      signal,
       headers: {
         authorization: `Bearer ${this.opts.localToken}`,
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
@@ -152,9 +165,10 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
 
   /** Load all tunnels + their logs. With `diff`, emit events for what changed since the cache. */
   private async snapshot(diff: boolean): Promise<void> {
-    const list = await this.request<WireTunnel[]>('GET', '/api/tunnels');
+    const timeout = () => AbortSignal.timeout(this.requestTimeoutMs);
+    const list = await this.request<WireTunnel[]>('GET', '/api/tunnels', undefined, timeout());
     const logs = await Promise.all(list.map((t) =>
-      this.request<WireEvent[]>('GET', `${this.path(t.name)}/logs?limit=${MAX_EVENTS}`).catch(() => [] as WireEvent[])));
+      this.request<WireEvent[]>('GET', `${this.path(t.name)}/logs?limit=${MAX_EVENTS}`, undefined, timeout()).catch(() => [] as WireEvent[])));
 
     if (this.closed) return;
 
@@ -179,32 +193,43 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
    * Events that arrive meanwhile are held and applied after the snapshot, which may be older.
    */
   private async sync(diff: boolean): Promise<void> {
+    if (this.closed) return;
     this.stream?.ctrl.abort();
     const stream: Stream = { ctrl: new AbortController(), held: [], ended: false };
     this.stream = stream;
     try {
       await this.openStream(stream);
       await this.snapshot(diff);
-      if (this.closed) return;
-      // Dropped while the snapshot loaded: retry rather than run without live events.
-      if (stream.ended) throw new Error('The daemon event stream closed');
     } catch (err) {
       stream.ctrl.abort();
       if (this.stream === stream) this.stream = null;
+      if (this.closed) return; // closed meanwhile: nothing went wrong
       throw err;
+    }
+    if (this.closed) {
+      stream.ctrl.abort();
+      return;
+    }
+    // Lines in the history just read, so held live copies of them aren't applied twice.
+    const inHistory = new Map<string, number>();
+    for (const [name, t] of this.cache) {
+      for (const e of t.connections) {
+        const key = logKey(name, e.timestamp.toISOString(), e.level, e.message);
+        inHistory.set(key, (inHistory.get(key) ?? 0) + 1);
+      }
     }
     const held = stream.held!;
     stream.held = null;
     for (const { event, data } of held) {
-      // A line logged while the snapshot loaded can also be in the history it just read.
-      if (event === 'log' && this.hasLogged(data.name, data.event)) continue;
+      if (event === 'log') {
+        const key = logKey(data.name, data.event.timestamp, data.event.level, data.event.message);
+        const n = inHistory.get(key) ?? 0;
+        if (n > 0) { inHistory.set(key, n - 1); continue; }
+      }
       this.handle(event, data);
     }
-  }
-
-  private hasLogged(name: string, event: WireEvent): boolean {
-    const seen = this.cache.get(name)?.connections ?? [];
-    return seen.some((e) => e.timestamp.toISOString() === event.timestamp && e.level === event.level && e.message === event.message);
+    // Dropped while the snapshot loaded: the snapshot is good, but live events need a new stream.
+    if (stream.ended) this.scheduleReconnect();
   }
 
   private async openStream(stream: Stream): Promise<void> {
@@ -224,9 +249,17 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     const parser = new SseParser();
     const decoder = new TextDecoder();
     const reader = body.getReader();
+    // Pings keep a healthy stream busy; silence for staleMs means the daemon is gone.
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const watch = () => {
+      clearTimeout(watchdog);
+      watchdog = setTimeout(() => stream.ctrl.abort(), this.staleMs);
+    };
+    watch();
     try {
       for (;;) {
         const { done, value } = await reader.read();
+        watch();
         if (done || this.stream !== stream) break;
         for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
           const data = JSON.parse(frame.data);
@@ -237,8 +270,9 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     } catch {
       // aborted or connection dropped
     }
+    clearTimeout(watchdog);
     stream.ended = true;
-    // While its sync is still loading the snapshot, that sync notices and retries instead.
+    // While its sync is still loading the snapshot, that sync notices and reconnects instead.
     if (!this.closed && this.stream === stream && !stream.held) this.scheduleReconnect();
   }
 
@@ -250,6 +284,7 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
       if (this.closed) return;
       try {
         const found = await this.opts.rediscover?.();
+        if (this.closed) return;
         if (found) this.opts = { ...this.opts, ...found };
         await this.sync(true);
       } catch {

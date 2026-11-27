@@ -1,16 +1,22 @@
 name: Release
 
-# Push a tag like v0.1.1 on main to stage that version on npm and create a GitHub release.
+# Runs on every push to main. When package.json has a version that isn't tagged yet (a release
+# PR was merged), it tests that commit, stages it on npm, then tags it and creates the GitHub
+# release. Other pushes to main stop at the first step.
 # npm trusted publishing (OIDC) is used, so no npm token is stored in this repository.
 # Staged versions go live once a maintainer approves them on npmjs.com (2FA).
 
 on:
   push:
-    tags: ['v*.*.*']
+    branches: [main]
 
 permissions:
   contents: write
   id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -20,27 +26,41 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Tag must point at main and match package.json
+      - name: Is this a new version?
+        id: version
         run: |
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "Tag $GITHUB_REF_NAME is not on main"; exit 1; }
           version=$(node -p "require('./package.json').version")
-          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME does not match package.json version $version"; exit 1; }
+          tag="v$version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag is already tagged; nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Releasing $tag."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
 
-      - uses: oven-sh/setup-bun@v2
+      - if: steps.version.outputs.release == 'true'
+        uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.9
-      - uses: actions/setup-node@v7
+      - if: steps.version.outputs.release == 'true'
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
           # No dependency cache in the publishing job: a poisoned cache could reach the OIDC token.
           package-manager-cache: false
 
-      - run: bun install --frozen-lockfile
-      - run: bun run typecheck
-      - run: bun run test
+      - if: steps.version.outputs.release == 'true'
+        run: bun install --frozen-lockfile
+      - if: steps.version.outputs.release == 'true'
+        run: bun run typecheck
+      - if: steps.version.outputs.release == 'true'
+        run: bun run test
 
       - name: Stage on npm
+        if: steps.version.outputs.release == 'true'
         run: |
           version=$(node -p "require('./package.json').version")
           if npm view "tuinnel-plus@$version" version >/dev/null 2>&1; then
@@ -49,7 +69,18 @@ jobs:
             npm stage publish . --access public --provenance
           fi
 
+      # Tagged only once staging worked, so a failed run can simply be re-run.
+      - name: Tag the release
+        if: steps.version.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git tag "$TAG" "$GITHUB_SHA"
+          git push origin "$TAG"
+
       - name: Create GitHub release
+        if: steps.version.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"

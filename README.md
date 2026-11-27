@@ -269,10 +269,9 @@ Everything lives in `~/.tuinnel/` (set `TUINNEL_HOME` to use another directory, 
 
 1. On `dev`, bump `version` in `package.json` and add an entry to `CHANGELOG.md`.
 2. Merge `dev` into `main` through a pull request.
-3. Tag the merge commit on `main` and push the tag: `git tag v0.1.1 && git push origin v0.1.1`.
-4. Approve the staged version on npmjs.com (Staged Packages) with two-factor authentication.
+3. Approve the staged version on npmjs.com (Staged Packages) with two-factor authentication.
 
-The release workflow tests and builds the tagged commit, stages it on npm with provenance, and creates the GitHub release. It refuses tags that aren't on `main` or don't match `package.json`. Nothing reaches npm users until the staged version is approved.
+Merging a new version into `main` releases it: the release workflow sees that `package.json` has a version without a tag, tests and builds that commit, stages it on npm with provenance, then tags it and creates the GitHub release. Merges that don't change the version release nothing. Nothing reaches npm users until the staged version is approved.
 
 ## Development
 

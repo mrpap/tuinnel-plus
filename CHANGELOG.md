@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Releases are tagged and published automatically when a new version is merged into `main`
+
 ## 0.1.5
 
 - When the background service is running, `add`, `up` and `password set` go through it instead of writing the config file themselves, so a change made at the same moment in the web UI or the service can no longer be overwritten. `add` now also creates the Cloudflare tunnel and DNS record right away, like the web UI, so a wrong zone or token shows up immediately

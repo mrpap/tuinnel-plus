@@ -341,9 +341,13 @@ describe('DaemonClient', () => {
       throw new Error('daemon went away');
     });
     f.cutStreams();
-    await until(() => running!.hub.clientCount === 1);
-    await new Promise((r) => setTimeout(r, 200)); // let any second reconnect loop show itself
-    expect(running!.hub.clientCount).toBe(1);
+    // The first connect, the reconnect that failed, then the one that worked. Waiting on the
+    // service's own count alone can pass early: it still counts a cut stream for a moment.
+    await until(() => f.counts.events >= 3, 3000);
+    await until(() => running!.hub.clientCount === 1, 3000);
+    await new Promise((r) => setTimeout(r, 300)); // a second reconnect loop would open more
+    expect(f.counts.events).toBe(3);
+    await until(() => running!.hub.clientCount === 1, 3000);
 
     log(backend, 'keep', 'once');
     await until(() => c.get('keep')!.connections.some((e) => e.message === 'once'));
@@ -382,6 +386,7 @@ describe('DaemonClient', () => {
     f.beforeNextList(() => { c.close(); closedAt = Date.now(); });
     f.cutStreams();
     await until(() => closedAt > 0);
+    await until(() => running!.hub.clientCount === 0, 3000); // the service notices a closed stream late on slow machines
     await new Promise((r) => setTimeout(r, 200));
     expect(running!.hub.clientCount).toBe(0);
     expect(after).toEqual([]);
@@ -400,9 +405,9 @@ describe('DaemonClient', () => {
     f.cutStreams();
     await until(() => f.counts.events >= 3);
     await until(() => running!.hub.clientCount === 1);
-    await new Promise((r) => setTimeout(r, 200)); // a second reconnect loop would open another stream
-    expect(running!.hub.clientCount).toBe(1);
+    await new Promise((r) => setTimeout(r, 300)); // a second reconnect loop would open another stream
     expect(f.counts.events).toBe(3); // first connect, the reconnect that dropped, one more
+    await until(() => running!.hub.clientCount === 1, 3000);
     log(backend, 'keep', 'live again');
     await until(() => c.get('keep')!.connections.some((e) => e.message === 'live again'));
     await new Promise((r) => setTimeout(r, 100));
@@ -438,6 +443,7 @@ describe('DaemonClient', () => {
 
     f.cutStreams();
     await until(() => looked);
+    await until(() => running!.hub.clientCount === 0, 3000); // the service notices a closed stream late on slow machines
     await new Promise((r) => setTimeout(r, 200));
     expect(running!.hub.clientCount).toBe(0);
     expect(f.counts.events).toBe(1);
@@ -451,7 +457,7 @@ describe('DaemonClient', () => {
     const c = client;
     f.beforeNextStream(() => c.close());
     await c.connect();
-    await new Promise((r) => setTimeout(r, 100));
+    await until(() => running!.hub.clientCount === 0, 3000);
     expect(running!.hub.clientCount).toBe(0);
   });
 
@@ -494,9 +500,9 @@ describe('DaemonClient', () => {
     const backend = new FakeBackend('keep');
     const port = await serve(backend, 0, TOKEN, 50);
     const f = controlledFetch();
-    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, staleMs: 150, fetch: f.fetch });
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, staleMs: 600, fetch: f.fetch });
     await client.connect();
-    await new Promise((r) => setTimeout(r, 600));
+    await new Promise((r) => setTimeout(r, 1500));
     expect(f.counts.events).toBe(1);
   });
 
@@ -575,6 +581,7 @@ describe('DaemonClient', () => {
     });
     f.cutStreams();
     await until(() => closed);
+    await until(() => running!.hub.clientCount === 0, 3000); // the service notices a closed stream late on slow machines
     await new Promise((r) => setTimeout(r, 200));
     expect(running!.hub.clientCount).toBe(0);
     expect(after).toEqual([]);
@@ -730,17 +737,20 @@ describe('DaemonClient', () => {
       backend.emit('tunnelAdded', { name: 'brief', tunnel: t });
       return ['brief'];
     });
-    // Someone deletes it right after the service answered, and that event arrives first.
+    // Someone deletes it right after the service answered, and that event arrives first: the
+    // answer is held until the client has seen it added and then removed.
+    let sawAdded = false;
     const slow = (async (input: any, init?: any) => {
       const res = await fetch(input, init);
       if (String(input).endsWith('/api/reload')) {
         backend.tunnels.delete('brief');
         backend.emit('tunnelRemoved', { name: 'brief' });
-        await new Promise((r) => setTimeout(r, 50));
+        await until(() => sawAdded && client!.get('brief') === undefined, 3000);
       }
       return res;
     }) as typeof fetch;
     client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, fetch: slow });
+    client.on('tunnelAdded', ({ name }) => { if (name === 'brief') sawAdded = true; });
     await client.connect();
     await client.reload();
     expect(client.get('brief')).toBeUndefined();

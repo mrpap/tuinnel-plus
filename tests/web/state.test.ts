@@ -3,7 +3,7 @@ import { describe, test, expect } from 'bun:test';
 import {
   initialState, applySnapshot, applyEvent, applyLogs, needsLogHistory, visibleTunnels, tunnelCounts, stateTone, stateLabel, formatUptime,
   parseRoute, routeHash, validateTunnelForm, nextTheme, themeLabel,
-  oklchToHex, accentHex, ACCENT_PRESETS, DEFAULT_ACCENT_HUE, brandSvg, versionText, versionParts,
+  oklchToHex, accentHex, ACCENT_PRESETS, DEFAULT_ACCENT_HUE, brandSvg, versionText,
 } from '../../src/web/state.js';
 
 const wire = (name: string, extra: Record<string, unknown> = {}) => ({
@@ -126,12 +126,6 @@ describe('web state', () => {
     expect(versionText({ version: '0.1.4', commit: null })).toBe('v0.1.4');
     expect(versionText({ version: '0.1.4' })).toBe('v0.1.4');
     expect(versionText({ version: '0.1.4', commit: '702daf5' })).toBe('v0.1.4 (702daf5)');
-  });
-
-  test('versionParts splits the label so the sidebar can put the commit on its own line', () => {
-    expect(versionParts(null)).toBeNull();
-    expect(versionParts({ version: '0.1.4', commit: null })).toEqual({ version: 'v0.1.4', commit: null });
-    expect(versionParts({ version: '0.1.4', commit: '702daf5-dirty' })).toEqual({ version: 'v0.1.4', commit: '702daf5-dirty' });
   });
 
   test('formatUptime is compact and blank until connected', () => {

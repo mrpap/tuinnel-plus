@@ -1,7 +1,7 @@
 import {
   initialState, applySnapshot, applyEvent, applyLogs, needsLogHistory, visibleTunnels, tunnelCounts, isRunning,
   stateTone, stateLabel, formatUptime, parseRoute, routeHash, validateTunnelForm, knownTheme, nextTheme, themeLabel,
-  ACCENT_PRESETS, DEFAULT_ACCENT_HUE, accentHex, brandSvg, versionText, versionParts,
+  ACCENT_PRESETS, DEFAULT_ACCENT_HUE, accentHex, brandSvg, versionText,
 } from './state.js';
 import { ICONS } from './icons.js';
 import { h, fill, patch } from './dom.js';
@@ -293,10 +293,7 @@ async function loadVersion() {
   } catch {
     daemonStatus = null;
   }
-  // A development build puts its commit on a second line; the sidebar is too narrow for one.
-  const parts = versionParts(daemonStatus);
-  fill($('version'), parts?.version ?? '', parts?.commit ? h('span', { class: 'version-commit' }, parts.commit) : null);
-  $('version').title = versionText(daemonStatus);
+  $('version').textContent = versionText(daemonStatus);
   if (route.view === 'settings') view.update?.();
 }
 

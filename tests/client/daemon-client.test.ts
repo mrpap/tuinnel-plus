@@ -61,6 +61,7 @@ function controlledFetch() {
   let onEvents: (() => Promise<void> | void) | null = null;
   let afterLogs: (() => Promise<void> | void) | null = null;
   let hangList = false;
+  let hangLists = false;
   let hangStream = false;
   let failLogs = false;
   let closeAtOnce = false;
@@ -69,7 +70,7 @@ function controlledFetch() {
   const impl = (async (input: any, init?: any) => {
     const url = String(input);
     if (url.endsWith('/api/tunnels') && (init?.method ?? 'GET') === 'GET') {
-      if (hangList) {
+      if (hangList || hangLists) {
         hangList = false;
         // A daemon that accepted the request and never answers; only an abort ends it.
         await new Promise((_, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal.reason)));
@@ -137,6 +138,8 @@ function controlledFetch() {
     afterNextLogs(fn: () => Promise<void> | void) { afterLogs = fn; },
     /** The next GET /api/tunnels never answers. */
     hangNextList() { hangList = true; },
+    /** No GET /api/tunnels answers from now on. */
+    hangAllLists(on = true) { hangLists = on; },
     /** The streams open now stop delivering anything, pings included, without closing. */
     freeze() { for (const c of streams) frozen.add(c); },
     /** The next event stream request never gets its headers. */
@@ -578,6 +581,69 @@ describe('DaemonClient', () => {
     await until(() => f.counts.events >= 3, 1500);
     log(backend, 'keep', 'after hang');
     await until(() => c.get('keep')!.connections.some((e) => e.message === 'after hang'));
+  });
+
+
+  test('a stream that stayed up resets the backoff, so the next drop reconnects quickly', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, stableMs: 150, fetch: f.fetch });
+    await client.connect();
+
+    // Build up a long backoff with streams that close at once...
+    f.closeStreamsAtOnce();
+    f.cutStreams();
+    await until(() => f.counts.events >= 5, 2000);
+    // ...then let one stay up long enough to count as stable.
+    f.closeStreamsAtOnce(false);
+    await until(() => running!.hub.clientCount === 1, 3000);
+    await new Promise((r) => setTimeout(r, 250));
+
+    const before = f.counts.events;
+    const cutAt = Date.now();
+    f.cutStreams();
+    await until(() => f.counts.events > before, 2000);
+    expect(Date.now() - cutAt).toBeLessThan(150); // the first delay again, not the built-up one
+  });
+
+  test('time spent loading the list does not count toward a stable stream', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, stableMs: 100, requestTimeoutMs: 150, fetch: f.fetch });
+    await client.connect();
+
+    // Every reload hangs until its timeout, longer than stableMs: the backoff must still grow.
+    f.hangAllLists();
+    f.cutStreams();
+    await new Promise((r) => setTimeout(r, 2000));
+    f.hangAllLists(false);
+    // Waits of 20, 40, 80, 160, 320, 640 ms plus 150 ms each fit about 5 attempts in 2 s;
+    // resetting every time would make it about 11.
+    expect(f.counts.events).toBeLessThanOrEqual(8);
+  });
+
+  test('a tunnel recreated under the same name does not show the old one\'s log lines', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: f.fetch });
+    await client.connect();
+    const c = client;
+    log(backend, 'keep', 'old tunnel');
+    await until(() => c.get('keep')!.connections.some((e) => e.message === 'old tunnel'));
+
+    // While disconnected it is deleted and created again: same name, new Cloudflare tunnel.
+    running!.hub.close();
+    await close(running!.server);
+    running = null;
+    backend.tunnels.get('keep')!.tunnelId = 'tid-recreated';
+    backend.tunnels.get('keep')!.connections = [];
+    f.failNextLogs();
+    await serve(backend, port);
+    await until(() => c.get('keep')!.tunnelId === 'tid-recreated');
+    expect(c.get('keep')!.connections.some((e) => e.message === 'old tunnel')).toBe(false);
   });
 
   test('reconnect follows a restarted daemon with a new token and port', async () => {

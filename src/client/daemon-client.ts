@@ -15,7 +15,8 @@ const MAX_RECONNECT_MS = 30_000;
 
 interface Stream {
   ctrl: AbortController;
-  openedAt: number;
+  /** When the snapshot was applied and the stream went live; null while loading. */
+  liveAt: number | null;
   /** Events held while the snapshot loads; null once they have been applied. */
   held: Array<{ event: string; data: any }> | null;
   ended: boolean;
@@ -182,8 +183,13 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     if (this.closed) return;
 
     const next = new Map<string, TunnelRuntime>();
-    // A history that failed to load keeps the lines already shown rather than emptying them.
-    list.forEach((w, i) => next.set(w.name, fromWireTunnel(w, logs[i]?.map(fromWireEvent) ?? this.cache.get(w.name)?.connections ?? [])));
+    // A history that failed to load keeps the lines already shown rather than emptying them,
+    // unless the name now belongs to a different (recreated) tunnel.
+    list.forEach((w, i) => {
+      const prev = this.cache.get(w.name);
+      const kept = prev && prev.tunnelId === w.tunnelId ? prev.connections : [];
+      next.set(w.name, fromWireTunnel(w, logs[i]?.map(fromWireEvent) ?? kept));
+    });
 
     const previous = this.cache;
     this.cache = next;
@@ -205,7 +211,7 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
   private async sync(diff: boolean): Promise<void> {
     if (this.closed) return;
     this.stream?.ctrl.abort();
-    const stream: Stream = { ctrl: new AbortController(), openedAt: Date.now(), held: [], ended: false };
+    const stream: Stream = { ctrl: new AbortController(), liveAt: null, held: [], ended: false };
     this.stream = stream;
     try {
       await this.openStream(stream);
@@ -233,6 +239,7 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     }
     const held = stream.held!;
     stream.held = null;
+    stream.liveAt = Date.now();
     for (const { event, data } of held) {
       if (event === 'log') {
         const key = logKey(data.name, data.event.timestamp, data.event.level, data.event.message);
@@ -254,13 +261,13 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
         headers: { authorization: `Bearer ${this.opts.localToken}`, accept: 'text/event-stream' },
         signal: stream.ctrl.signal,
       });
+      if (!res.ok || !res.body) {
+        let message: string | undefined;
+        try { message = (JSON.parse(await res.text()) as { error?: string }).error; } catch { /* non-JSON */ }
+        throw new Error(message ?? `Could not open the daemon event stream (${res.status})`);
+      }
     } finally {
       clearTimeout(timer);
-    }
-    if (!res.ok || !res.body) {
-      let message: string | undefined;
-      try { message = (JSON.parse(await res.text()) as { error?: string }).error; } catch { /* non-JSON */ }
-      throw new Error(message ?? `Could not open the daemon event stream (${res.status})`);
     }
     void this.pump(res.body, stream);
   }
@@ -292,7 +299,8 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     }
     clearTimeout(watchdog);
     stream.ended = true;
-    if (Date.now() - stream.openedAt >= this.stableMs) this.failures = 0;
+    // Only time spent live counts: a stream that died while its snapshot loaded never was.
+    if (stream.liveAt !== null && Date.now() - stream.liveAt >= this.stableMs) this.failures = 0;
     // While its sync is still loading the snapshot, that sync notices and reconnects instead.
     if (!this.closed && this.stream === stream && !stream.held) this.scheduleReconnect();
   }

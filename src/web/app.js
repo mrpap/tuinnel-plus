@@ -146,6 +146,7 @@ async function zoneNames() {
 let state = initialState();
 let route = parseRoute(location.hash);
 let remoteAccess = null; // { enabled, subdomain, zone, url } from /api/settings
+let remoteAccessRetry = null; // retries /api/settings until it loads once
 let daemonStatus = null; // from /api/status: { version, commit, ... }
 
 const REPO_URL = 'https://github.com/mrpap/tuinnel-plus';
@@ -178,6 +179,7 @@ let authMode = 'login';
 function showAuth(mode, hint = '') {
   authMode = mode;
   closeEvents();
+  clearTimeout(remoteAccessRetry);
   $('app').hidden = true;
   $('auth').hidden = false;
   const setup = mode === 'setup';
@@ -276,16 +278,16 @@ async function loadLogs(name) {
   } catch { /* tunnel may have gone */ }
 }
 
-let remoteAccessRetry = null;
 async function loadRemoteAccess() {
   clearTimeout(remoteAccessRetry);
   try {
     const settings = await api('/api/settings');
     remoteAccess = settings.selfExpose;
     if (typeof settings.accentHue === 'number' && settings.accentHue !== accentHue) applyAccent(settings.accentHue);
-  } catch {
-    // Keep what we had; if nothing has loaded yet, try again shortly.
-    if (!remoteAccess) remoteAccessRetry = setTimeout(loadRemoteAccess, 5000);
+  } catch (err) {
+    // Keep what we had; if nothing has loaded yet, try again shortly, while still signed in.
+    clearTimeout(remoteAccessRetry);
+    if (!remoteAccess && err.status !== 401 && !$('app').hidden) remoteAccessRetry = setTimeout(loadRemoteAccess, 5000);
   }
   render();
 }
@@ -975,7 +977,8 @@ function settingsView(root) {
         method: 'PUT',
         body: exposeOn ? { enabled: true, subdomain: raSub.value.trim().toLowerCase(), zone: raZone.value } : { enabled: false },
       });
-      await loadSnapshot();
+      // Saved: a failed refresh of the tunnel list must not read as a failed save.
+      loadSnapshot().catch(() => {});
       // Show what was saved, as the server normalised it.
       Object.assign(touched, { on: false, sub: false, zone: false });
       raShown = null;

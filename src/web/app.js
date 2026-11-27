@@ -177,6 +177,8 @@ window.addEventListener('hashchange', () => {
 let authMode = 'login';
 
 function showAuth(mode, hint = '') {
+  // Already showing this form (a late 401 after signing out): keep what the user typed.
+  if (!$('auth').hidden && authMode === mode && !hint) return;
   authMode = mode;
   closeEvents();
   clearTimeout(remoteAccessRetry);

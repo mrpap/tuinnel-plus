@@ -187,7 +187,8 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     // unless the name now belongs to a different (recreated) tunnel.
     list.forEach((w, i) => {
       const prev = this.cache.get(w.name);
-      const kept = prev && prev.tunnelId === w.tunnelId ? prev.connections : [];
+      // A tunnel still being created has no id yet; once created it is the same tunnel.
+      const kept = prev && (prev.tunnelId === w.tunnelId || prev.tunnelId === null) ? prev.connections : [];
       next.set(w.name, fromWireTunnel(w, logs[i]?.map(fromWireEvent) ?? kept));
     });
 
@@ -264,6 +265,8 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
       if (!res.ok || !res.body) {
         let message: string | undefined;
         try { message = (JSON.parse(await res.text()) as { error?: string }).error; } catch { /* non-JSON */ }
+        // Timed out while reading the error reply: report the timeout, not the status.
+        if (stream.ctrl.signal.reason?.name === 'TimeoutError') throw stream.ctrl.signal.reason;
         throw new Error(message ?? `Could not open the daemon event stream (${res.status})`);
       }
     } finally {

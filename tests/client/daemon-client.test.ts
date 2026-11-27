@@ -64,6 +64,7 @@ function controlledFetch() {
   let hangLists = false;
   let hangStream = false;
   let failLogs = false;
+  let stuckError = false;
   let closeAtOnce = false;
   const frozen = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const counts = { events: 0 };
@@ -83,6 +84,14 @@ function controlledFetch() {
     }
     if (url.endsWith('/api/events')) {
       counts.events++;
+      if (stuckError) {
+        stuckError = false;
+        // An error reply whose body never finishes arriving; like a real fetch, aborting ends it.
+        const body = new ReadableStream({
+          start(c) { init?.signal?.addEventListener('abort', () => c.error(init.signal.reason)); },
+        });
+        return new Response(body, { status: 500 });
+      }
       if (hangStream) {
         hangStream = false;
         await new Promise((_, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal.reason)));
@@ -144,6 +153,8 @@ function controlledFetch() {
     freeze() { for (const c of streams) frozen.add(c); },
     /** The next event stream request never gets its headers. */
     hangNextStream() { hangStream = true; },
+    /** The next event stream request gets an error reply whose body never ends. */
+    stickNextStreamError() { stuckError = true; },
     /** The next log history request fails. */
     failNextLogs() { failLogs = true; },
     /** Every event stream from now on closes as soon as it opens. */
@@ -604,7 +615,7 @@ describe('DaemonClient', () => {
     const cutAt = Date.now();
     f.cutStreams();
     await until(() => f.counts.events > before, 2000);
-    expect(Date.now() - cutAt).toBeLessThan(150); // the first delay again, not the built-up one
+    expect(Date.now() - cutAt).toBeLessThan(400); // the first delay (20 ms), not the built-up one (640 ms+)
   });
 
   test('time spent loading the list does not count toward a stable stream', async () => {
@@ -644,6 +655,37 @@ describe('DaemonClient', () => {
     await serve(backend, port);
     await until(() => c.get('keep')!.tunnelId === 'tid-recreated');
     expect(c.get('keep')!.connections.some((e) => e.message === 'old tunnel')).toBe(false);
+  });
+
+
+  test('an error reply that never finishes says the service did not answer', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, requestTimeoutMs: 150, fetch: f.fetch });
+    f.stickNextStreamError();
+    await expect(client.connect()).rejects.toThrow('The background service did not answer');
+  });
+
+  test('a tunnel that finished being created while disconnected keeps its lines if its history fails', async () => {
+    const backend = new FakeBackend('keep');
+    backend.tunnels.get('keep')!.tunnelId = null; // still being created
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: f.fetch });
+    await client.connect();
+    const c = client;
+    log(backend, 'keep', 'while creating');
+    await until(() => c.get('keep')!.connections.some((e) => e.message === 'while creating'));
+
+    running!.hub.close();
+    await close(running!.server);
+    running = null;
+    backend.tunnels.get('keep')!.tunnelId = 'tid-keep'; // creation finished meanwhile
+    f.failNextLogs();
+    await serve(backend, port);
+    await until(() => c.get('keep')!.tunnelId === 'tid-keep');
+    expect(c.get('keep')!.connections.some((e) => e.message === 'while creating')).toBe(true);
   });
 
   test('reconnect follows a restarted daemon with a new token and port', async () => {

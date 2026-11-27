@@ -1,7 +1,7 @@
 import {
   initialState, applySnapshot, applyEvent, applyLogs, needsLogHistory, visibleTunnels, tunnelCounts, isRunning,
   stateTone, stateLabel, formatUptime, parseRoute, routeHash, validateTunnelForm, knownTheme, nextTheme, themeLabel,
-  ACCENT_PRESETS, DEFAULT_ACCENT_HUE, accentHex, brandSvg,
+  ACCENT_PRESETS, DEFAULT_ACCENT_HUE, accentHex, brandSvg, versionText,
 } from './state.js';
 import { ICONS } from './icons.js';
 import { h, fill, patch } from './dom.js';
@@ -146,7 +146,8 @@ async function zoneNames() {
 let state = initialState();
 let route = parseRoute(location.hash);
 let remoteAccess = null; // { enabled, subdomain, zone, url } from /api/settings
-let version = null;
+let remoteAccessRetry = null; // retries /api/settings until it loads once
+let daemonStatus = null; // from /api/status: { version, commit, ... }
 
 const REPO_URL = 'https://github.com/mrpap/tuinnel-plus';
 let events = null;
@@ -176,8 +177,11 @@ window.addEventListener('hashchange', () => {
 let authMode = 'login';
 
 function showAuth(mode, hint = '') {
+  // Already showing this form (a late 401 after signing out): keep what the user typed.
+  if (!$('auth').hidden && authMode === mode && !hint) return;
   authMode = mode;
   closeEvents();
+  clearTimeout(remoteAccessRetry);
   $('app').hidden = true;
   $('auth').hidden = false;
   const setup = mode === 'setup';
@@ -277,23 +281,27 @@ async function loadLogs(name) {
 }
 
 async function loadRemoteAccess() {
+  clearTimeout(remoteAccessRetry);
   try {
     const settings = await api('/api/settings');
     remoteAccess = settings.selfExpose;
     if (typeof settings.accentHue === 'number' && settings.accentHue !== accentHue) applyAccent(settings.accentHue);
-  } catch {
-    remoteAccess = null;
+  } catch (err) {
+    // Keep what we had; if nothing has loaded yet, try again shortly, while still signed in.
+    clearTimeout(remoteAccessRetry);
+    if (!remoteAccess && err.status !== 401 && !$('app').hidden) remoteAccessRetry = setTimeout(loadRemoteAccess, 5000);
   }
   render();
 }
 
 async function loadVersion() {
   try {
-    version = (await api('/api/status')).version;
+    daemonStatus = await api('/api/status');
   } catch {
-    version = null;
+    daemonStatus = null;
   }
-  $('version').textContent = version ? `v${version}` : '';
+  $('version').textContent = versionText(daemonStatus);
+  $('version').title = versionText(daemonStatus); // the full label if the row cuts it off
   if (route.view === 'settings') view.update?.();
 }
 
@@ -922,10 +930,40 @@ function settingsView(root) {
   const raMsg = h('span', { class: 'form-ok' });
   const raError = h('p', { class: 'form-error', role: 'alert' });
   const raSave = h('button', { class: 'btn', type: 'button' }, 'Save');
-  const drawUrl = () => fill(raUrl, remoteAccess?.enabled && remoteAccess.url
-    ? ['Reachable at ', h('a', { href: remoteAccess.url, target: '_blank', rel: 'noopener' }, remoteAccess.url)]
-    : 'Only reachable from this machine.');
+  const drawUrl = () => fill(raUrl, !remoteAccess
+    ? 'Loading the current setting…'
+    : remoteAccess.enabled && remoteAccess.url
+      ? ['Reachable at ', h('a', { href: remoteAccess.url, target: '_blank', rel: 'noopener' }, remoteAccess.url)]
+      : 'Only reachable from this machine.');
   drawUrl();
+  const raSwitch = switchButton('Expose admin UI', exposeOn, (on) => { exposeOn = on; touched.on = true; });
+  // The settings may load after this page is drawn (opening #/settings directly). Show them
+  // when they arrive, in every field the user hasn't changed yet.
+  const touched = { on: false, sub: false, zone: false };
+  let raShown = remoteAccess;
+  raSub.addEventListener('input', () => { touched.sub = true; });
+  raZone.addEventListener('change', () => { touched.zone = true; });
+  const syncRemoteAccess = () => {
+    // Until the settings have loaded, the form shows defaults: saving them would turn this off.
+    if (!raBusy) raSave.disabled = !remoteAccess;
+    drawUrl();
+    if (!remoteAccess || remoteAccess === raShown) return;
+    raShown = remoteAccess;
+    if (!touched.on) {
+      exposeOn = remoteAccess.enabled;
+      raSwitch.setAttribute('aria-checked', String(exposeOn));
+    }
+    if (!touched.sub) raSub.value = remoteAccess.subdomain ?? '';
+    // Without a saved zone, keep whatever the zone list selected.
+    if (!touched.zone && remoteAccess.zone) {
+      if (![...raZone.options].some((o) => o.value === remoteAccess.zone)) {
+        raZone.append(h('option', { value: remoteAccess.zone }, `.${remoteAccess.zone}`));
+      }
+      raZone.value = remoteAccess.zone;
+    }
+  };
+  let raBusy = false;
+  syncRemoteAccess();
   raSave.addEventListener('click', async () => {
     raError.textContent = '';
     raMsg.textContent = '';
@@ -934,20 +972,26 @@ function settingsView(root) {
       if (!check.ok) return void (raError.textContent = check.errors.subdomain ?? check.errors.zone);
     }
     raSave.disabled = true;
+    raBusy = true;
     try {
-      await api('/api/settings/self-expose', {
+      // The reply is the saved state, so the form is right even if reloading settings fails.
+      remoteAccess = await api('/api/settings/self-expose', {
         method: 'PUT',
         body: exposeOn ? { enabled: true, subdomain: raSub.value.trim().toLowerCase(), zone: raZone.value } : { enabled: false },
       });
-      await loadRemoteAccess();
-      await loadSnapshot();
-      drawUrl();
+      // Saved: a failed refresh of the tunnel list must not read as a failed save.
+      loadSnapshot().catch(() => {});
+      // Show what was saved, as the server normalised it.
+      Object.assign(touched, { on: false, sub: false, zone: false });
+      raShown = null;
+      syncRemoteAccess();
       raMsg.textContent = 'Saved';
       setTimeout(() => { raMsg.textContent = ''; }, 1800);
     } catch (err) {
       raError.textContent = err.message;
     } finally {
-      raSave.disabled = false;
+      raBusy = false;
+      raSave.disabled = !remoteAccess;
     }
   });
 
@@ -1062,7 +1106,7 @@ function settingsView(root) {
       card('public', 'Remote access',
         h('div', { class: 'card-body' },
           h('p', { class: 'card-desc' }, 'Expose this dashboard through its own Cloudflare tunnel, behind your password.'),
-          switchButton('Expose admin UI', exposeOn, (on) => { exposeOn = on; }),
+          raSwitch,
           h('div', { class: 'host-input' }, raSub, h('span', { class: 'select-wrap' }, raZone, icon('expand_more'))),
           raUrl, raError,
           h('div', { class: 'end-row' }, raMsg, raSave))),
@@ -1095,14 +1139,19 @@ function settingsView(root) {
             h('button', { class: 'btn danger', type: 'button', onclick: signOut }, icon('logout'), 'Sign out'))))));
 
   zoneNames().then((list) => {
+    // Keep a zone the user already picked; otherwise select the saved one.
+    const chosen = touched.zone ? raZone.value : remoteAccess?.zone;
     if (remoteAccess?.zone && !list.includes(remoteAccess.zone)) list.push(remoteAccess.zone);
-    fill(raZone, list.map((z) => h('option', { value: z, selected: z === remoteAccess?.zone }, `.${z}`)));
+    if (chosen && !list.includes(chosen)) list.push(chosen);
+    fill(raZone, list.map((z) => h('option', { value: z, selected: z === chosen }, `.${z}`)));
   });
 
   return {
     update() {
       drawTheme();
-      aboutVersion.textContent = version ? `tuinnel-plus v${version}` : '—';
+      syncRemoteAccess();
+      const label = versionText(daemonStatus);
+      aboutVersion.textContent = label ? `tuinnel-plus ${label}` : '—';
     },
   };
 }

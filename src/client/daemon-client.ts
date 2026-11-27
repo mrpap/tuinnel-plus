@@ -8,11 +8,41 @@ import { SseParser } from './sse-parser.js';
 
 const MAX_EVENTS = 1000;
 
+const logKey = (name: string, timestamp: string, level: string, message: string) =>
+  JSON.stringify([name, timestamp, level, message]);
+
+const MAX_RECONNECT_MS = 30_000;
+
+/** A request the service answered with an error status. */
+export class DaemonRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'DaemonRequestError';
+  }
+}
+
+interface Stream {
+  ctrl: AbortController;
+  /** When the snapshot was applied and the stream went live; null while loading. */
+  liveAt: number | null;
+  /** Events held while the snapshot loads; null once they have been applied. */
+  held: Array<{ event: string; data: any }> | null;
+  ended: boolean;
+}
+
 export interface DaemonClientOptions {
   baseUrl: string;
   localToken: string;
   fetch?: typeof fetch;
   reconnectMs?: number;
+  /** Replace the event stream when nothing, not even a ping, arrives for this long. */
+  staleMs?: number;
+  /** Give up on a snapshot request, or on opening the event stream, after this long, and retry. */
+  requestTimeoutMs?: number;
+  /** A stream that stayed up this long resets the reconnect backoff. */
+  stableMs?: number;
+  /** Load each tunnel's log history (the dashboard shows it; one-shot commands don't need it). */
+  history?: boolean;
   /**
    * Where the daemon is now. Each `serve` writes a new token (and may bind
    * another port), so reconnects re-read it rather than reuse the old one.
@@ -29,27 +59,40 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
   private cache = new Map<string, TunnelRuntime>();
   private fetchImpl: typeof fetch;
   private reconnectMs: number;
+  private staleMs: number;
+  private requestTimeoutMs: number;
+  private stableMs: number;
+  /** Reconnects since a stream last stayed up; each one waits twice as long, up to MAX_RECONNECT_MS. */
+  private failures = 0;
   private closed = false;
-  private stream: AbortController | null = null;
+  /** The event stream in use; any earlier one is aborted and its events ignored. */
+  private stream: Stream | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Names removed while any reload request is out, so no answer re-adds them. */
+  private removedDuringReload = new Set<string>();
+  private reloadsOut = 0;
 
   constructor(private opts: DaemonClientOptions) {
     super();
     this.fetchImpl = opts.fetch ?? fetch;
     this.reconnectMs = opts.reconnectMs ?? 1000;
+    // The service pings every 25 s; two missed pings means the stream is dead.
+    this.staleMs = opts.staleMs ?? 60_000;
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? 15_000;
+    this.stableMs = opts.stableMs ?? 10_000;
   }
 
   // -- Connection --
 
   async connect(): Promise<void> {
-    await this.snapshot(false);
-    await this.openStream();
+    await this.sync(false);
   }
 
   close(): void {
     this.closed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.stream?.abort();
+    this.reconnectTimer = null;
+    this.stream?.ctrl.abort();
     this.stream = null;
   }
 
@@ -100,16 +143,44 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     return this.request('GET', '/api/zones');
   }
 
-  status(): Promise<{ version: string; uptimeMs: number; counts: Record<string, number>; selfExpose: { enabled: boolean; url: string | null } }> {
+  status(): Promise<{ version: string; commit: string | null; uptimeMs: number; counts: Record<string, number>; selfExpose: { enabled: boolean; url: string | null } }> {
     return this.request('GET', '/api/status');
   }
 
+  /**
+   * Have the service re-read the config file and token. It answers with the tunnels it picked
+   * up, so they are usable at once rather than when their live events arrive.
+   */
   async reload(): Promise<void> {
-    await this.request('POST', '/api/reload');
+    this.reloadsOut++;
+    try {
+      const res = await this.request<{ added?: WireTunnel[] } | undefined>('POST', '/api/reload');
+      if (!res) {
+        // A service before 0.1.5 answers 204 and announces nothing: load the list instead.
+        await this.snapshot(true);
+        return;
+      }
+      for (const tunnel of res.added ?? []) {
+        // Deleted since the service answered (its event arrived first): don't bring it back.
+        if (!this.removedDuringReload.has(tunnel.name)) this.handle('added', { name: tunnel.name, tunnel });
+      }
+    } finally {
+      if (--this.reloadsOut === 0) this.removedDuringReload.clear();
+    }
   }
 
   purge(): Promise<PurgeResult> {
     return this.request('POST', '/api/purge');
+  }
+
+  /** Set the web UI password (local clients only). */
+  async setPassword(password: string): Promise<void> {
+    await this.request('PUT', '/api/settings/password/local', { password });
+  }
+
+  /** Tell the service the password in the config file changed (services before 0.1.5). */
+  async reloadPassword(): Promise<void> {
+    await this.request('POST', '/api/settings/password/reload');
   }
 
   async setSelfExpose(body: { enabled: boolean; subdomain?: string; zone?: string }): Promise<{ enabled: boolean; url: string | null }> {
@@ -122,9 +193,10 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     return `/api/tunnels/${encodeURIComponent(name)}`;
   }
 
-  private async request<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
+  private async request<T = unknown>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     const res = await this.fetchImpl(this.opts.baseUrl + path, {
       method,
+      signal,
       headers: {
         authorization: `Bearer ${this.opts.localToken}`,
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
@@ -137,26 +209,39 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     try { data = text ? JSON.parse(text) : undefined; } catch { /* non-JSON */ }
     if (!res.ok) {
       const message = (data as { error?: string } | undefined)?.error ?? `Daemon request failed (${res.status})`;
-      throw new Error(message);
+      throw new DaemonRequestError(message, res.status);
     }
     return data as T;
   }
 
   /** Load all tunnels + their logs. With `diff`, emit events for what changed since the cache. */
   private async snapshot(diff: boolean): Promise<void> {
-    const list = await this.request<WireTunnel[]>('GET', '/api/tunnels');
-    const logs = await Promise.all(list.map((t) =>
-      this.request<WireEvent[]>('GET', `${this.path(t.name)}/logs?limit=${MAX_EVENTS}`).catch(() => [] as WireEvent[])));
+    const timeout = () => AbortSignal.timeout(this.requestTimeoutMs);
+    const list = await this.request<WireTunnel[]>('GET', '/api/tunnels', undefined, timeout());
+    const logs = await Promise.all(list.map((t) => this.opts.history === false ? Promise.resolve(null) :
+      this.request<WireEvent[]>('GET', `${this.path(t.name)}/logs?limit=${MAX_EVENTS}`, undefined, timeout()).catch(() => null)));
+
+    if (this.closed) return;
 
     const next = new Map<string, TunnelRuntime>();
-    list.forEach((w, i) => next.set(w.name, fromWireTunnel(w, logs[i].map(fromWireEvent))));
+    // A history that failed to load keeps the lines already shown rather than emptying them,
+    // unless the name now belongs to a different (recreated) tunnel.
+    list.forEach((w, i) => {
+      const prev = this.cache.get(w.name);
+      // A tunnel still being created has no id yet; once created it is the same tunnel.
+      const kept = prev && (prev.tunnelId === w.tunnelId || prev.tunnelId === null) ? prev.connections : [];
+      next.set(w.name, fromWireTunnel(w, logs[i]?.map(fromWireEvent) ?? kept));
+    });
 
     const previous = this.cache;
     this.cache = next;
     if (!diff) return;
 
     for (const name of previous.keys()) {
-      if (!next.has(name)) this.emit('tunnelRemoved', { name });
+      if (!next.has(name)) {
+        if (this.reloadsOut > 0) this.removedDuringReload.add(name);
+        this.emit('tunnelRemoved', { name });
+      }
     }
     for (const [name, tunnel] of next) {
       if (previous.has(name)) this.emit('stateChange', { name, state: tunnel.state, tunnel });
@@ -164,47 +249,126 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     }
   }
 
-  private async openStream(): Promise<void> {
-    const ctrl = new AbortController();
-    this.stream = ctrl;
-    const res = await this.fetchImpl(`${this.opts.baseUrl}/api/events`, {
-      headers: { authorization: `Bearer ${this.opts.localToken}`, accept: 'text/event-stream' },
-      signal: ctrl.signal,
-    });
-    if (!res.ok || !res.body) throw new Error(`Could not open the daemon event stream (${res.status})`);
-    void this.pump(res.body, ctrl);
+  /**
+   * Open the event stream before loading the snapshot, so no change falls between the two.
+   * Events that arrive meanwhile are held and applied after the snapshot, which may be older.
+   */
+  private async sync(diff: boolean): Promise<void> {
+    if (this.closed) return;
+    this.stream?.ctrl.abort();
+    const stream: Stream = { ctrl: new AbortController(), liveAt: null, held: [], ended: false };
+    this.stream = stream;
+    try {
+      await this.openStream(stream);
+      await this.snapshot(diff);
+    } catch (err) {
+      stream.ctrl.abort();
+      if (this.stream === stream) this.stream = null;
+      if (this.closed) return; // closed meanwhile: nothing went wrong
+      if (err instanceof Error && err.name === 'TimeoutError') {
+        throw new Error(`The background service did not answer within ${Math.round(this.requestTimeoutMs / 1000)} s`);
+      }
+      throw err;
+    }
+    if (this.closed) {
+      stream.ctrl.abort();
+      return;
+    }
+    // Lines in the history just read, so held live copies of them aren't applied twice.
+    const inHistory = new Map<string, number>();
+    for (const [name, t] of this.cache) {
+      for (const e of t.connections) {
+        const key = logKey(name, e.timestamp.toISOString(), e.level, e.message);
+        inHistory.set(key, (inHistory.get(key) ?? 0) + 1);
+      }
+    }
+    const held = stream.held!;
+    stream.held = null;
+    stream.liveAt = Date.now();
+    for (const { event, data } of held) {
+      if (event === 'log') {
+        const key = logKey(data.name, data.event.timestamp, data.event.level, data.event.message);
+        const n = inHistory.get(key) ?? 0;
+        if (n > 0) { inHistory.set(key, n - 1); continue; }
+      }
+      this.handle(event, data);
+    }
+    // Dropped while the snapshot loaded: the snapshot is good, but live events need a new stream.
+    if (stream.ended) this.scheduleReconnect();
   }
 
-  private async pump(body: ReadableStream<Uint8Array>, ctrl: AbortController): Promise<void> {
+  private async openStream(stream: Stream): Promise<void> {
+    // Until the headers arrive the watchdog isn't running yet; this covers that wait.
+    const timer = setTimeout(() => stream.ctrl.abort(new DOMException('Timed out', 'TimeoutError')), this.requestTimeoutMs);
+    let res: Response;
+    try {
+      res = await this.fetchImpl(`${this.opts.baseUrl}/api/events`, {
+        headers: { authorization: `Bearer ${this.opts.localToken}`, accept: 'text/event-stream' },
+        signal: stream.ctrl.signal,
+      });
+      if (!res.ok || !res.body) {
+        let message: string | undefined;
+        try { message = (JSON.parse(await res.text()) as { error?: string }).error; } catch { /* non-JSON */ }
+        // Timed out while reading the error reply: report the timeout, not the status.
+        if (stream.ctrl.signal.reason?.name === 'TimeoutError') throw stream.ctrl.signal.reason;
+        throw new Error(message ?? `Could not open the daemon event stream (${res.status})`);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+    void this.pump(res.body, stream);
+  }
+
+  private async pump(body: ReadableStream<Uint8Array>, stream: Stream): Promise<void> {
     const parser = new SseParser();
     const decoder = new TextDecoder();
     const reader = body.getReader();
+    // Pings keep a healthy stream busy; silence for staleMs means the daemon is gone.
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const watch = () => {
+      clearTimeout(watchdog);
+      watchdog = setTimeout(() => stream.ctrl.abort(), this.staleMs);
+    };
+    watch();
     try {
       for (;;) {
         const { done, value } = await reader.read();
-        if (done) break;
+        watch();
+        if (done || this.stream !== stream) break;
         for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
-          this.handle(frame.event, JSON.parse(frame.data));
+          const data = JSON.parse(frame.data);
+          if (stream.held) stream.held.push({ event: frame.event, data });
+          else this.handle(frame.event, data);
         }
       }
     } catch {
       // aborted or connection dropped
     }
-    if (!this.closed && this.stream === ctrl) this.scheduleReconnect();
+    clearTimeout(watchdog);
+    stream.ended = true;
+    // Only time spent live counts: a stream that died while its snapshot loaded never was.
+    if (stream.liveAt !== null && Date.now() - stream.liveAt >= this.stableMs) this.failures = 0;
+    // While its sync is still loading the snapshot, that sync notices and reconnects instead.
+    if (!this.closed && this.stream === stream && !stream.held) this.scheduleReconnect();
   }
 
+  /** One reconnect loop at a time: a pending retry already covers a second failure. */
   private scheduleReconnect(): void {
+    if (this.closed || this.reconnectTimer) return;
+    const delay = Math.min(this.reconnectMs * 2 ** this.failures, MAX_RECONNECT_MS);
+    this.failures++;
     this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
       if (this.closed) return;
       try {
         const found = await this.opts.rediscover?.();
+        if (this.closed) return;
         if (found) this.opts = { ...this.opts, ...found };
-        await this.snapshot(true);
-        await this.openStream();
+        await this.sync(true);
       } catch {
         this.scheduleReconnect();
       }
-    }, this.reconnectMs);
+    }, delay);
   }
 
   private handle(event: string, data: any): void {
@@ -239,6 +403,7 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
   }
 
   private drop(name: string): void {
+    if (this.reloadsOut > 0) this.removedDuringReload.add(name);
     if (this.cache.delete(name)) this.emit('tunnelRemoved', { name });
   }
 }

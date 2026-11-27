@@ -3,7 +3,7 @@ import { describe, test, expect } from 'bun:test';
 import {
   initialState, applySnapshot, applyEvent, applyLogs, needsLogHistory, visibleTunnels, tunnelCounts, stateTone, stateLabel, formatUptime,
   parseRoute, routeHash, validateTunnelForm, nextTheme, themeLabel,
-  oklchToHex, accentHex, ACCENT_PRESETS, DEFAULT_ACCENT_HUE, brandSvg,
+  oklchToHex, accentHex, ACCENT_PRESETS, DEFAULT_ACCENT_HUE, brandSvg, versionText,
 } from '../../src/web/state.js';
 
 const wire = (name: string, extra: Record<string, unknown> = {}) => ({
@@ -119,6 +119,13 @@ describe('web state', () => {
     for (const st of ['error', 'port_down', 'disconnected']) expect(stateTone(st)).toBe('danger');
     expect(stateTone('stopped')).toBe('muted');
     expect(stateLabel('port_down')).toBe('port down');
+  });
+
+  test('versionText shows the build commit when the daemon reports one', () => {
+    expect(versionText(null)).toBe('');
+    expect(versionText({ version: '0.1.4', commit: null })).toBe('v0.1.4');
+    expect(versionText({ version: '0.1.4' })).toBe('v0.1.4');
+    expect(versionText({ version: '0.1.4', commit: '702daf5' })).toBe('v0.1.4 (702daf5)');
   });
 
   test('formatUptime is compact and blank until connected', () => {

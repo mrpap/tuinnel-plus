@@ -6,7 +6,6 @@ What's planned for tuinnel-plus, roughly in order. Ideas and feedback are welcom
 
 - **Install with Homebrew** — `brew install mrpap/tap/tuinnel-plus`, with releases published automatically from version tags
 - **More protocols** — SSH, RDP and plain TCP tunnels (SMB as a TCP preset), managed like any other tunnel, with a ready-to-copy `cloudflared access` command for connecting
-- **One writer for the config** — `add` and `up` save new tunnels through the running service instead of writing the config file themselves
 
 ## Later
 

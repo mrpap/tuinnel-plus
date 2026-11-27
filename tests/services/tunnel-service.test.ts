@@ -158,3 +158,51 @@ describe('TunnelService errors', () => {
     expect(seen).toEqual(['cloudflared exited with code 1']);
   });
 });
+
+describe('TunnelService create', () => {
+  test('without an API token it says what to do and creates nothing in Cloudflare', async () => {
+    const cf = fakeCf();
+    const svc = new TunnelService('', memStore(cfgWith()), memPids(), cf);
+    svc.loadFromConfig();
+    await expect(svc.create({ port: 3000, subdomain: 'x', zone: 'example.com' })).rejects.toThrow('No Cloudflare API token');
+    expect(svc.getAll().has('x')).toBe(false);
+    expect(cf.calls.filter((c: string) => c.startsWith('provision:'))).toEqual([]);
+  });
+});
+
+describe('TunnelService loadFromConfig', () => {
+  test('announces and returns only tunnels it did not know yet', () => {
+    const store = memStore(cfgWith('app'));
+    const svc = new TunnelService('tok', store, memPids());
+    const added: string[] = [];
+    svc.on('tunnelAdded', ({ name }) => added.push(name));
+    expect(svc.loadFromConfig()).toEqual(['app']);
+    store.current = cfgWith('app', 'web');
+    expect(svc.loadFromConfig()).toEqual(['web']);
+    expect(added).toEqual(['app', 'web']);
+  });
+});
+
+describe('TunnelService reload during a recreate', () => {
+  test('a reload while a tunnel is being recreated under the same name does not load the old entry', async () => {
+    const store = memStore(cfgWith('app'));
+    const cf = fakeCf();
+    const svc = new TunnelService('tok', store, memPids(), cf);
+    svc.loadFromConfig();
+    // Hold the new provision open so a reload can land mid-recreate.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const provision = cf.provision.bind(cf);
+    cf.provision = async (...args: Parameters<typeof cf.provision>) => { await gate; return provision(...args); };
+    const added: string[] = [];
+    svc.on('tunnelAdded', ({ name }) => added.push(name));
+
+    const updating = svc.update('app', { zone: 'example.org' });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(svc.loadFromConfig()).toEqual([]);
+    release();
+    await updating;
+    expect(added).toEqual(['app']); // only the recreated tunnel, once
+    expect(svc.get('app')!.config.zone).toBe('example.org');
+  });
+});

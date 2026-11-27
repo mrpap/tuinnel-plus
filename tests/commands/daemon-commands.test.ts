@@ -9,6 +9,9 @@ import { removeCommand } from '../../src/commands/remove.js';
 import { statusCommand } from '../../src/commands/status.js';
 import { addCommand } from '../../src/commands/add.js';
 import { exposeCommand } from '../../src/commands/expose.js';
+import { savePassword } from '../../src/commands/password.js';
+import { verifyPassword } from '../../src/daemon/auth.js';
+import { DaemonRequestError } from '../../src/client/daemon-client.js';
 
 // Config lives in the sandboxed TUINNEL_HOME (tests/setup/isolate-state.ts).
 
@@ -35,7 +38,20 @@ function fakeClient(tunnels: TunnelRuntime[] = []) {
     calls,
     getAll: () => new Map(map),
     get: (n: string) => map.get(n),
-    reload: async () => { calls.push('reload'); },
+    // Like the service: reload adds tunnels from the config file that it doesn't know yet.
+    reload: async () => {
+      calls.push('reload');
+      for (const [name, tc] of Object.entries(readConfig()?.tunnels ?? {})) {
+        if (!map.has(name)) map.set(name, { ...runtime(name, 'stopped', tc.port), config: { ...tc } });
+      }
+    },
+    create: async (o: { port: number; subdomain: string; zone: string }) => {
+      calls.push(`create:${o.subdomain}:${o.port}:${o.zone}`);
+      map.set(o.subdomain, runtime(o.subdomain, 'stopped', o.port));
+      return o.subdomain;
+    },
+    setPassword: async () => { calls.push('setPassword'); },
+    reloadPassword: async () => { calls.push('reloadPassword'); },
     start: async (n: string) => {
       calls.push(`start:${n}`);
       if (map.get(n)?.state === 'connected') throw new Error(`Tunnel "${n}" is already running`);
@@ -120,17 +136,167 @@ describe('CLI commands on the daemon', () => {
     expect(client.calls).toContain('close');
   });
 
-  test('add reloads a running daemon but does not start one', async () => {
+  test('add creates the tunnel through a running service and leaves the config file to it', async () => {
     writeConfig({ version: 1, apiToken: 'tok', defaultZone: 'example.com', tunnels: {} });
     const client = fakeClient();
+    await addCommand('3000', { subdomain: 'x' }, async () => client as any);
+    expect(client.calls).toEqual(['reload', 'create:x:3000:example.com', 'close']);
+    expect(readConfig()?.tunnels.x).toBeUndefined();
+    expect(stderr).toContain('Added tunnel "x"');
+    expect(stderr).toContain('tuinnel-plus up 3000');
+    expect(process.exitCode).toBe(0);
+  });
+
+  test('add refuses a name the running service already has', async () => {
+    writeConfig({ version: 1, apiToken: 'tok', defaultZone: 'example.com', tunnels: {} });
+    const client = fakeClient([runtime('x', 'stopped', 4000)]);
     await addCommand('3000', { subdomain: 'x', zone: 'example.com' }, async () => client as any);
     expect(client.calls).toEqual(['reload', 'close']);
-    expect(readConfig()?.tunnels.x?.port).toBe(3000);
+    expect(stderr).toContain('already exists');
+    expect(process.exitCode).toBe(1);
+  });
 
-    // No daemon running: config is still saved, nothing is started.
+  test('add without a running service saves to the config file and starts nothing', async () => {
+    writeConfig({ version: 1, apiToken: 'tok', defaultZone: 'example.com', tunnels: {} });
     await addCommand('3001', { subdomain: 'y', zone: 'example.com' }, async () => null);
     expect(readConfig()?.tunnels.y?.port).toBe(3001);
     expect(process.exitCode).toBe(0);
+  });
+
+  test('add tells a service that came up meanwhile to read the file it just wrote', async () => {
+    writeConfig({ version: 1, apiToken: 'tok', defaultZone: 'example.com', tunnels: {} });
+    const client = fakeClient();
+    let asks = 0;
+    await addCommand('3001', { subdomain: 'y', zone: 'example.com' }, async () => (asks++ === 0 ? null : client as any));
+    expect(readConfig()?.tunnels.y?.port).toBe(3001);
+    expect(client.calls).toEqual(['reload', 'close']);
+  });
+
+  test('add refuses a name that is only in the config file, which the service reads first', async () => {
+    writeConfig({ version: 1, apiToken: 'tok', defaultZone: 'example.com', tunnels: { x: { port: 4000, subdomain: 'x', zone: 'example.com', protocol: 'http' } } });
+    const client = fakeClient();
+    await addCommand('3000', { subdomain: 'x' }, async () => client as any);
+    expect(client.calls).toEqual(['reload', 'close']);
+    expect(stderr).toContain('already exists');
+    expect(process.exitCode).toBe(1);
+  });
+
+  test('up starts a tunnel that is only in the config file', async () => {
+    writeConfig({ version: 1, apiToken: 'tok', defaultZone: 'example.com', tunnels: { foo: { port: 3000, subdomain: 'foo', zone: 'example.com', protocol: 'http' } } });
+    const client = fakeClient();
+    await upCommand(['3000'], { tui: false }, async () => client as any);
+    expect(client.calls).toEqual(['reload', 'start:foo', 'close']);
+  });
+
+  test('add still succeeds when a service that came up meanwhile cannot be told', async () => {
+    writeConfig({ version: 1, apiToken: 'tok', defaultZone: 'example.com', tunnels: {} });
+    const client = fakeClient();
+    client.reload = async () => { throw new Error('connection reset'); };
+    let asks = 0;
+    await addCommand('3002', { subdomain: 'z', zone: 'example.com' }, async () => (asks++ === 0 ? null : client as any));
+    expect(readConfig()?.tunnels.z?.port).toBe(3002);
+    expect(process.exitCode).toBe(0);
+  });
+
+  test('add reports a tunnel the service could not create', async () => {
+    writeConfig({ version: 1, apiToken: 'tok', defaultZone: 'example.com', tunnels: {} });
+    const client = fakeClient();
+    client.create = async () => { throw new Error('No Cloudflare API token configured. Run `tuinnel-plus init` first.'); };
+    await addCommand('3000', { subdomain: 'x' }, async () => client as any);
+    expect(stderr).toContain('No Cloudflare API token configured');
+    expect(process.exitCode).toBe(1);
+  });
+
+  test('add warns when another tunnel already uses the port', async () => {
+    writeConfig({ version: 1, apiToken: 'tok', defaultZone: 'example.com', tunnels: {} });
+    const client = fakeClient([runtime('other', 'stopped', 3000)]);
+    await addCommand('3000', { subdomain: 'x' }, async () => client as any);
+    expect(stderr).toContain('Port 3000 is also used by "other"');
+    expect(process.exitCode).toBe(0);
+  });
+
+  test('up creates a new tunnel through the service, then starts it', async () => {
+    writeConfig({ version: 1, apiToken: 'tok', defaultZone: 'example.com', tunnels: {} });
+    const client = fakeClient();
+    await upCommand(['4000'], { tui: false, subdomain: 'n' }, async () => client as any);
+    expect(client.calls).toEqual(['reload', 'create:n:4000:example.com', 'start:n', 'close']);
+    expect(readConfig()?.tunnels.n).toBeUndefined();
+    expect(stderr).toContain('https://n.example.com <- :4000');
+  });
+
+  test('up finds tunnels the service knows even if the config file is stale', async () => {
+    writeConfig({ version: 1, apiToken: 'tok', defaultZone: 'example.com', tunnels: {} });
+    const client = fakeClient([runtime('web', 'stopped', 5000)]);
+    await upCommand(['5000'], { tui: false }, async () => client as any);
+    expect(client.calls).toEqual(['reload', 'start:web', 'close']);
+  });
+
+  test('up with one subdomain for two ports creates it once, even before the service reports it back', async () => {
+    writeConfig({ version: 1, apiToken: 'tok', defaultZone: 'example.com', tunnels: {} });
+    const client = fakeClient();
+    // The real client learns about a new tunnel from a live event that can arrive after create returns.
+    client.create = async (o: any) => { client.calls.push(`create:${o.subdomain}:${o.port}:${o.zone}`); return o.subdomain; };
+    await upCommand(['3000', '3001'], { tui: false, subdomain: 'x' }, async () => client as any);
+    expect(client.calls.filter((c) => c.startsWith('create:'))).toEqual(['create:x:3000:example.com']);
+    expect(process.exitCode).toBe(0);
+  });
+
+  test('up keeps going when one new tunnel cannot be created, and fails when none start', async () => {
+    writeConfig({ version: 1, apiToken: 'tok', defaultZone: 'example.com', tunnels: {} });
+    const client = fakeClient([runtime('ok', 'stopped', 3000)]);
+    client.create = async (o: any) => { client.calls.push(`create:${o.subdomain}`); throw new Error('Zone not found'); };
+    await upCommand(['3000', '3001'], { tui: false, subdomain: 'bad' }, async () => client as any);
+    expect(client.calls).toEqual(['reload', 'create:bad', 'start:ok', 'close']);
+    expect(stderr).toContain('Failed to create tunnel "bad": Zone not found');
+    expect(process.exitCode).toBe(0);
+
+    stderr = '';
+    const none = fakeClient();
+    none.create = async () => { throw new Error('Zone not found'); };
+    await upCommand(['4000'], { tui: false, subdomain: 'bad' }, async () => none as any);
+    expect(stderr).toContain('No tunnels started');
+    expect(process.exitCode).toBe(1);
+  });
+
+  test('password set goes through a running service', async () => {
+    const client = fakeClient();
+    expect(await savePassword('brand-new-password', 'brand-new-password', async () => client as any)).toBeNull();
+    expect(client.calls).toEqual(['setPassword', 'close']);
+    expect(readConfig()?.web?.passwordHash).toBeUndefined();
+  });
+
+  test('password set falls back to the file when the running service is older', async () => {
+    const client = fakeClient();
+    client.setPassword = async () => { client.calls.push('setPassword'); throw new DaemonRequestError('Not found', 404); };
+    expect(await savePassword('brand-new-password', 'brand-new-password', async () => client as any)).toBeNull();
+    expect(client.calls).toEqual(['setPassword', 'reloadPassword', 'close']);
+    expect(verifyPassword('brand-new-password', readConfig()!.web!.passwordHash!)).toBe(true);
+  });
+
+  test('password set tells a service that came up meanwhile to read the new hash', async () => {
+    const client = fakeClient();
+    let asks = 0;
+    expect(await savePassword('brand-new-password', 'brand-new-password', async () => (asks++ === 0 ? null : client as any))).toBeNull();
+    expect(verifyPassword('brand-new-password', readConfig()!.web!.passwordHash!)).toBe(true);
+    expect(client.calls).toEqual(['reloadPassword', 'close']);
+  });
+
+  test('password set still succeeds when the older service cannot be told to reload', async () => {
+    const client = fakeClient();
+    client.setPassword = async () => { throw new DaemonRequestError('Not found', 404); };
+    client.reloadPassword = async () => { throw new Error('connection reset'); };
+    expect(await savePassword('brand-new-password', 'brand-new-password', async () => client as any)).toBeNull();
+    expect(verifyPassword('brand-new-password', readConfig()!.web!.passwordHash!)).toBe(true);
+    expect(stderr).toContain('signed in');
+  });
+
+  test('password set without a running service writes the file; bad input changes nothing', async () => {
+    expect(await savePassword('brand-new-password', 'brand-new-password', async () => null)).toBeNull();
+    expect(verifyPassword('brand-new-password', readConfig()!.web!.passwordHash!)).toBe(true);
+    const client = fakeClient();
+    expect(await savePassword('one-password', 'another-one', async () => client as any)).toBe('Passwords do not match.');
+    expect(await savePassword('short', 'short', async () => client as any)).toContain('at least');
+    expect(client.calls).toEqual([]);
   });
 
   test('expose sets self-expose through the daemon', async () => {

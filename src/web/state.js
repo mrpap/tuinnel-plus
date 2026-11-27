@@ -119,6 +119,12 @@ export function formatUptime(connectedAt, now = Date.now()) {
   return d ? `${d}d ${hr}h` : hr ? `${hr}h ${m}m` : m ? `${m}m ${s % 60}s` : `${s}s`;
 }
 
+/** The running version, plus the commit for a development build, for example "v0.1.4 (702daf5)". */
+export function versionText(status) {
+  if (!status?.version) return '';
+  return status.commit ? `v${status.version} (${status.commit})` : `v${status.version}`;
+}
+
 // -- Routes: #/ (overview), #/new, #/settings, #/tunnel/<name> -------------------
 
 export function parseRoute(hash) {

@@ -30,8 +30,8 @@ export interface DaemonDeps {
   zones?: () => Promise<Array<{ id: string; name: string }>>;
   /** Preview orphaned Cloudflare tunnels, then delete only the ids the user confirmed. */
   purge?: { preview: () => Promise<PurgePlan>; run: (ids: string[]) => Promise<PurgeResult> };
-  /** Re-read token + config into the running service (after CLI `add` or onboarding). */
-  reload?: () => Promise<void>;
+  /** Re-read the token and config file; returns the names of tunnels newly picked up. */
+  reload?: () => Promise<string[] | void>;
   scrape?: (addr: string) => Promise<TunnelMetrics>;
   /** Password auth state for the browser lane. */
   auth?: { store: ConfigStore; sessions: SessionStore; limiter: RateLimiter };
@@ -40,7 +40,7 @@ export interface DaemonDeps {
   listenInfo?: () => { port: number; host: string };
   /** Directory holding the web UI (index.html, app.js, …). */
   assetsDir?: string;
-  statusInfo?: () => { version: string; startedAt: number; selfExpose: { enabled: boolean; url: string | null } };
+  statusInfo?: () => { version: string; commit: string | null; startedAt: number; selfExpose: { enabled: boolean; url: string | null } };
 }
 
 /** An error carrying the HTTP status it should be reported with. */

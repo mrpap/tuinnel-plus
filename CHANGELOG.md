@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.5
+
+- When the background service is running, `add`, `up` and `password set` go through it instead of writing the config file themselves, so a change made at the same moment in the web UI or the service can no longer be overwritten. `add` now also creates the Cloudflare tunnel and DNS record right away, like the web UI, so a wrong zone or token shows up immediately
+- Tunnels added to the config file by hand are picked up by the running service when you run `add` or `up`, and now also appear in open web UI and terminal dashboards without a reconnect
+- Creating a tunnel without a Cloudflare API token now says to run `tuinnel-plus init`, in the web UI too
+- `add` warns when another tunnel already uses the same port
+- Fix: after the terminal dashboard's first-run setup, it showed "No tunnels configured yet" even when tunnels existed, and a tunnel added from another terminal could cut the setup off
+- Fix: the bars under "Responses by status" in a tunnel's metrics were always empty
+- Fix: opening the web UI directly on Settings showed remote access as off even when it was on, so pressing Save there turned it off
+- Fix: when the terminal dashboard reconnected to a restarted service, a tunnel change that happened during the reconnect could be missed, so the dashboard showed an old state
+- The terminal dashboard and CLI notice a service that stopped answering and reconnect instead of waiting forever, and wait longer between attempts while it keeps failing
+- The web UI shows the version on its own row at the bottom of the sidebar
+- Fix: the version shown in the web UI and by `--version` came from `package.json` when tuinnel-plus started, so a build could show a newer version than it was built from. The version is now fixed when tuinnel-plus is built, and a build made from anything other than a release also shows its commit, for example `0.1.4 (702daf5)` from `--version`
+- The release and CI workflows use the Node 24 versions of GitHub's checkout and setup-node actions
+- The README and the repository's Sponsor button link to a way to support the project
+
 ## 0.1.4
 
 - `tuinnel-plus service install` now works on Linux too: it sets up a systemd user service that starts at boot and restarts if it crashes. It turns on lingering when your system allows it, so the service also runs on a headless machine where nobody logs in; otherwise it shows the one command to run. `service status` and `service uninstall` work on Linux as well

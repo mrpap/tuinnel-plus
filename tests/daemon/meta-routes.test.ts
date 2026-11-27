@@ -27,7 +27,7 @@ async function boot(backend: FakeBackend, overrides: Partial<DaemonDeps> = {}) {
     },
     reload: async () => {},
     scrape: async () => METRICS,
-    statusInfo: () => ({ version: '0.1.0', startedAt: Date.now() - 1000, selfExpose: { enabled: false, url: null } }),
+    statusInfo: () => ({ version: '0.1.0', commit: '702daf5', startedAt: Date.now() - 1000, selfExpose: { enabled: false, url: null } }),
     ...overrides,
   });
   server = made.server;
@@ -57,6 +57,7 @@ describe('meta routes', () => {
     const port = await boot(backend);
     const res = await raw(port, { path: '/api/status' });
     expect(res.json.version).toBe('0.1.0');
+    expect(res.json.commit).toBe('702daf5');
     expect(res.json.uptimeMs).toBeGreaterThanOrEqual(1000);
     expect(res.json.counts).toEqual({ total: 3, running: 1, error: 1 });
     expect(res.json.selfExpose).toEqual({ enabled: false, url: null });
@@ -135,11 +136,12 @@ describe('meta routes', () => {
     expect((await raw(port, { method: 'POST', path: '/api/purge', body: { ids: [1] } })).status).toBe(400);
   });
 
-  test('reload calls the reload dep', async () => {
+  test('reload calls the reload dep and answers with the tunnels it picked up', async () => {
     let reloaded = 0;
-    const port = await boot(new FakeBackend(), { reload: async () => { reloaded++; } });
+    const port = await boot(new FakeBackend('old', 'fresh'), { reload: async () => { reloaded++; return ['fresh']; } });
     const res = await raw(port, { method: 'POST', path: '/api/reload' });
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(200);
     expect(reloaded).toBe(1);
+    expect(res.json.added.map((t: { name: string }) => t.name)).toEqual(['fresh']);
   });
 });

@@ -191,7 +191,7 @@ Check the setup with `tuinnel-plus doctor`. It verifies the config file, the tok
 | `tuinnel-plus down [names...]` | Stop tunnels |
 | `tuinnel-plus down --all` | Stop all running tunnels |
 | `tuinnel-plus down <name> --clean` | Stop a tunnel and delete it from Cloudflare and the config |
-| `tuinnel-plus add <port>` | Add a tunnel without starting it |
+| `tuinnel-plus add <port>` | Add a tunnel without starting it. With the service running, it also creates the Cloudflare tunnel and DNS record |
 | `tuinnel-plus remove <name>` | Delete a tunnel: stop it and remove it from Cloudflare and the config |
 | `tuinnel-plus list` | List configured tunnels |
 | `tuinnel-plus status` | Show running tunnels and their state |
@@ -205,7 +205,7 @@ Check the setup with `tuinnel-plus doctor`. It verifies the config file, the tok
 
 Aliases: `start` = `up`, `stop` = `down`, `rm` = `remove`, `ls` = `list`.
 
-Flags: `--verbose` (global), `--json` (`list`, `status`, `zones`), `-v`/`--version`, `--help`.
+Flags: `--verbose` (global), `--json` (`list`, `status`, `zones`), `-v`/`--version`, `--help`. A build that isn't a release adds its commit to the version, for example `0.1.4 (702daf5)`.
 
 `purge` never deletes a tunnel that has live connections, since that tunnel is running somewhere else (another machine using the same Cloudflare account, for example).
 
@@ -289,6 +289,10 @@ Tests never touch your real `~/.tuinnel`: a preload points `TUINNEL_HOME` at a t
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for what's planned next.
+
+## Support
+
+If tuinnel-plus is useful to you, you can support its development through [PayPal](https://paypal.me/anpa). Bug reports, ideas and stars help too.
 
 ## License
 

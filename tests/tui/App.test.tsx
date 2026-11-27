@@ -260,5 +260,49 @@ describe('App', () => {
       // Written to the sandboxed state dir (tests/setup/isolate-state.ts), never ~/.tuinnel.
       expect(readConfig()?.apiToken).toBe('tok-123');
     });
+
+    const stubZones = () => {
+      globalThis.fetch = (async () => new Response(JSON.stringify({
+        success: true, errors: [], messages: [],
+        result: [{ id: 'z1', name: 'example.com', status: 'active', account: { id: 'acc1', name: 'Acc' } }],
+        result_info: { page: 1, per_page: 50, count: 1, total_count: 1, total_pages: 1 },
+      }), { headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch;
+    };
+
+    test('after onboarding, tunnels the service picked up from the config are shown', async () => {
+      stubZones();
+      const { props, service } = makeTestApp([], 'onboarding');
+      const fromFile = makeTunnel('fromfile');
+      const complete = async () => {
+        (service as any).mockTunnels.set('fromfile', fromFile);
+        service.emit('tunnelAdded', { name: 'fromfile', tunnel: fromFile });
+      };
+      const { stdin, lastFrame } = render(<App {...props} onOnboardingComplete={complete} />);
+      await rendered({ stdin, lastFrame });
+      await press({ stdin, lastFrame }, 'tok-123');
+      await press({ stdin, lastFrame }, '\r');
+      await waitFor(() => expect(lastFrame()).toContain('fromfile'));
+    });
+
+    test('a tunnel added elsewhere during onboarding does not cut the wizard off', async () => {
+      const { props, service } = makeTestApp([], 'onboarding');
+      const { stdin, lastFrame } = render(<App {...props} />);
+      await rendered({ stdin, lastFrame });
+      const before = lastFrame();
+      service.emit('tunnelAdded', { name: 'elsewhere', tunnel: makeTunnel('elsewhere') });
+      await new Promise((r) => setTimeout(r, 300));
+      expect(lastFrame()).toBe(before);
+    });
+
+    test('onboarding still finishes when the service cannot be told about the new token', async () => {
+      stubZones();
+      const { props } = makeTestApp([], 'onboarding');
+      const { stdin, lastFrame } = render(<App {...props} onOnboardingComplete={async () => { throw new Error('service gone'); }} />);
+      await rendered({ stdin, lastFrame });
+      await press({ stdin, lastFrame }, 'tok-123');
+      await press({ stdin, lastFrame }, '\r');
+      await waitFor(() => expect(lastFrame()).not.toContain('API token'));
+      expect(readConfig()?.apiToken).toBe('tok-123');
+    });
   });
 });

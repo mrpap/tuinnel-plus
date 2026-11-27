@@ -4,7 +4,7 @@ import { createDaemonServer } from '../../src/daemon/server.js';
 import { SseHub } from '../../src/daemon/sse.js';
 import { createGuard } from '../../src/daemon/guard.js';
 import { SessionStore } from '../../src/daemon/auth.js';
-import { DaemonClient } from '../../src/client/daemon-client.js';
+import { DaemonClient, DaemonRequestError } from '../../src/client/daemon-client.js';
 import { PartialDeleteError } from '../../src/services/tunnel-service.js';
 import { FakeBackend, close } from '../daemon/helpers.js';
 
@@ -19,8 +19,8 @@ afterEach(async () => {
   running = null;
 });
 
-async function serve(backend: FakeBackend, port = 0, token = TOKEN) {
-  const hub = new SseHub(backend, { pingMs: 60_000 });
+async function serve(backend: FakeBackend, port = 0, token = TOKEN, pingMs = 60_000, reload?: () => Promise<void>) {
+  const hub = new SseHub(backend, { pingMs });
   let actual = port;
   const { server } = createDaemonServer({
     service: backend,
@@ -29,6 +29,7 @@ async function serve(backend: FakeBackend, port = 0, token = TOKEN) {
     isSystemTunnel: () => false,
     hub,
     zones: async () => [{ id: 'z1', name: 'example.com' }],
+    reload,
   });
   await new Promise<void>((r) => server.listen(port, '127.0.0.1', r));
   actual = (server.address() as { port: number }).port;
@@ -49,6 +50,125 @@ const until = async (pred: () => boolean, ms = 2000) => {
     await new Promise((r) => setTimeout(r, 10));
   }
 };
+
+
+/**
+ * A fetch whose event streams the test can cut (as if the daemon dropped them), and whose
+ * GET /api/tunnels can run a hook first: to change things, close the client or fail it.
+ */
+function controlledFetch() {
+  const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
+  let onTunnels: (() => Promise<void> | void) | null = null;
+  let onEvents: (() => Promise<void> | void) | null = null;
+  let afterLogs: (() => Promise<void> | void) | null = null;
+  let hangList = false;
+  let hangLists = false;
+  let hangStream = false;
+  let failLogs = false;
+  let stuckError = false;
+  let closeAtOnce = false;
+  const frozen = new Set<ReadableStreamDefaultController<Uint8Array>>();
+  const counts = { events: 0 };
+  const impl = (async (input: any, init?: any) => {
+    const url = String(input);
+    if (url.endsWith('/api/tunnels') && (init?.method ?? 'GET') === 'GET') {
+      if (hangList || hangLists) {
+        hangList = false;
+        // A daemon that accepted the request and never answers; only an abort ends it.
+        await new Promise((_, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal.reason)));
+      }
+      if (onTunnels) {
+        const hook = onTunnels;
+        onTunnels = null;
+        await hook();
+      }
+    }
+    if (url.endsWith('/api/events')) {
+      counts.events++;
+      if (stuckError) {
+        stuckError = false;
+        // An error reply whose body never finishes arriving; like a real fetch, aborting ends it.
+        const body = new ReadableStream({
+          start(c) { init?.signal?.addEventListener('abort', () => c.error(init.signal.reason)); },
+        });
+        return new Response(body, { status: 500 });
+      }
+      if (hangStream) {
+        hangStream = false;
+        await new Promise((_, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal.reason)));
+      }
+      if (onEvents) {
+        const hook = onEvents;
+        onEvents = null;
+        await hook();
+      }
+    }
+    if (url.includes('/logs') && failLogs) {
+      failLogs = false;
+      return new Response(JSON.stringify({ error: 'busy' }), { status: 500 });
+    }
+    const res = await fetch(input, init);
+    if (url.includes('/logs') && afterLogs) {
+      const hook = afterLogs;
+      afterLogs = null;
+      await res.clone().text(); // the history is read before the hook runs
+      await hook();
+    }
+    if (!url.endsWith('/api/events') || !res.body) return res;
+    const reader = res.body.getReader();
+    let ctrl!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        ctrl = c;
+        streams.add(c);
+        if (closeAtOnce) { streams.delete(c); c.close(); }
+      },
+      async pull(c) {
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) { streams.delete(c); c.close(); return; }
+            if (!frozen.has(c)) { c.enqueue(value); return; } // a frozen stream swallows everything, pings too
+          }
+        } catch { streams.delete(c); try { c.close(); } catch { /* already closed */ } }
+      },
+      cancel() { streams.delete(ctrl); return reader.cancel(); },
+    });
+    return new Response(body, { status: res.status, headers: res.headers });
+  }) as typeof fetch;
+  return {
+    fetch: impl,
+    /** End every event stream the client has open, like a daemon going away. */
+    cutStreams() { for (const c of streams) { try { c.close(); } catch { /* closed */ } } streams.clear(); },
+    /** Run `fn` before the next GET /api/tunnels goes out. */
+    beforeNextList(fn: () => Promise<void> | void) { onTunnels = fn; },
+    /** Run `fn` before the next event stream is requested. */
+    beforeNextStream(fn: () => Promise<void> | void) { onEvents = fn; },
+    /** Run `fn` once the next log history has been read. */
+    afterNextLogs(fn: () => Promise<void> | void) { afterLogs = fn; },
+    /** The next GET /api/tunnels never answers. */
+    hangNextList() { hangList = true; },
+    /** No GET /api/tunnels answers from now on. */
+    hangAllLists(on = true) { hangLists = on; },
+    /** The streams open now stop delivering anything, pings included, without closing. */
+    freeze() { for (const c of streams) frozen.add(c); },
+    /** The next event stream request never gets its headers. */
+    hangNextStream() { hangStream = true; },
+    /** The next event stream request gets an error reply whose body never ends. */
+    stickNextStreamError() { stuckError = true; },
+    /** The next log history request fails. */
+    failNextLogs() { failLogs = true; },
+    /** Every event stream from now on closes as soon as it opens. */
+    closeStreamsAtOnce(on = true) { closeAtOnce = on; },
+    counts,
+  };
+}
+
+function log(backend: FakeBackend, name: string, message: string, timestamp = new Date()) {
+  const t = backend.tunnels.get(name)!;
+  t.connections.push({ timestamp, level: 'INF', message });
+  backend.emit('stateChange', { name, state: t.state, tunnel: t });
+}
 
 describe('DaemonClient', () => {
   test('connect fills getAll with logs as Dates', async () => {
@@ -145,6 +265,562 @@ describe('DaemonClient', () => {
     k.state = 'restarting';
     backend.emit('stateChange', { name: 'keep', state: 'restarting', tunnel: k });
     await until(() => c.get('keep')!.state === 'restarting');
+  });
+
+  /** Restart the daemon on the same port; `meanwhile` changes the backend while it is down. */
+  async function restart(backend: FakeBackend, port: number, meanwhile: () => Promise<unknown> = async () => {}) {
+    running!.hub.close();
+    await close(running!.server);
+    running = null;
+    await meanwhile();
+    await serve(backend, port);
+  }
+
+  test('a change while the event stream is reconnecting is not lost', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    let slowStream = false;
+    // After the restart, the event stream takes a while to open again.
+    const slow: typeof fetch = (async (input: any, init?: any) => {
+      if (slowStream && String(input).endsWith('/api/events')) await new Promise((r) => setTimeout(r, 150));
+      return fetch(input, init);
+    }) as typeof fetch;
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: slow });
+    await client.connect();
+    const c = client;
+
+    slowStream = true;
+    await restart(backend, port, () => backend.create({ port: 2, subdomain: 'fresh', zone: 'example.com' }));
+    await until(() => c.get('fresh') !== undefined);
+
+    const k = backend.tunnels.get('keep')!;
+    k.state = 'restarting';
+    backend.emit('stateChange', { name: 'keep', state: 'restarting', tunnel: k });
+    await until(() => c.get('keep')!.state === 'restarting', 1000);
+  });
+
+  test('a change that arrives while the tunnel list loads is not overwritten by the older list', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    let racing = false;
+    // After the restart, the tunnel list is read, then the tunnel changes before the list arrives.
+    const slow: typeof fetch = (async (input: any, init?: any) => {
+      const res = await fetch(input, init);
+      if (racing && String(input).endsWith('/api/tunnels')) {
+        racing = false;
+        const k = backend.tunnels.get('keep')!;
+        k.state = 'restarting';
+        backend.emit('stateChange', { name: 'keep', state: 'restarting', tunnel: k });
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return res;
+    }) as typeof fetch;
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: slow });
+    await client.connect();
+    const c = client;
+
+    racing = true;
+    await restart(backend, port);
+    await until(() => !racing);
+    await until(() => c.get('keep')!.state === 'restarting', 1000);
+  });
+
+
+  test('a stream that drops while the list is reloading leaves one stream and no doubled events', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: f.fetch });
+    await client.connect();
+    const c = client;
+
+    // The reconnect's own stream drops too, and its list request fails.
+    f.beforeNextList(async () => {
+      f.cutStreams();
+      await new Promise((r) => setTimeout(r, 10));
+      throw new Error('daemon went away');
+    });
+    f.cutStreams();
+    // The first connect, the reconnect that failed, then the one that worked. Waiting on the
+    // service's own count alone can pass early: it still counts a cut stream for a moment.
+    await until(() => f.counts.events >= 3, 3000);
+    await until(() => running!.hub.clientCount === 1, 3000);
+    await new Promise((r) => setTimeout(r, 300)); // a second reconnect loop would open more
+    expect(f.counts.events).toBe(3);
+    await until(() => running!.hub.clientCount === 1, 3000);
+
+    log(backend, 'keep', 'once');
+    await until(() => c.get('keep')!.connections.some((e) => e.message === 'once'));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(c.get('keep')!.connections.filter((e) => e.message === 'once')).toHaveLength(1);
+  });
+
+  test('a log line printed while the list reloads shows up once', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: f.fetch });
+    await client.connect();
+    const c = client;
+
+    // Printed after the new stream is open and before the list and logs are read: it reaches
+    // the client both live and in the reloaded history.
+    f.beforeNextList(() => log(backend, 'keep', 'during reload'));
+    f.cutStreams();
+    await until(() => c.get('keep')!.connections.some((e) => e.message === 'during reload'));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(c.get('keep')!.connections.filter((e) => e.message === 'during reload')).toHaveLength(1);
+  });
+
+  test('closing during a reload leaves no stream open and emits nothing more', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: f.fetch });
+    await client.connect();
+    const c = client;
+    let closedAt = 0;
+    const after: string[] = [];
+    c.on('stateChange', ({ name }) => { if (closedAt) after.push(name); });
+
+    f.beforeNextList(() => { c.close(); closedAt = Date.now(); });
+    f.cutStreams();
+    await until(() => closedAt > 0);
+    await until(() => running!.hub.clientCount === 0, 3000); // the service notices a closed stream late on slow machines
+    await new Promise((r) => setTimeout(r, 200));
+    expect(running!.hub.clientCount).toBe(0);
+    expect(after).toEqual([]);
+  });
+
+
+  test('a stream that drops while a reconnect loads, though the load works, still reconnects', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: f.fetch });
+    await client.connect();
+    const c = client;
+
+    f.beforeNextList(() => f.cutStreams());
+    f.cutStreams();
+    await until(() => f.counts.events >= 3);
+    await until(() => running!.hub.clientCount === 1);
+    await new Promise((r) => setTimeout(r, 300)); // a second reconnect loop would open another stream
+    expect(f.counts.events).toBe(3); // first connect, the reconnect that dropped, one more
+    await until(() => running!.hub.clientCount === 1, 3000);
+    log(backend, 'keep', 'live again');
+    await until(() => c.get('keep')!.connections.some((e) => e.message === 'live again'));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(c.get('keep')!.connections.filter((e) => e.message === 'live again')).toHaveLength(1);
+  });
+
+  test('a stream that drops during the first load still connects, then reconnects', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: f.fetch });
+    f.beforeNextList(() => f.cutStreams());
+    await client.connect();
+    const c = client;
+    expect(c.get('keep')).toBeDefined();
+
+    await until(() => running!.hub.clientCount === 1 && f.counts.events >= 2);
+    log(backend, 'keep', 'live');
+    await until(() => c.get('keep')!.connections.some((e) => e.message === 'live'));
+  });
+
+  test('closing while the daemon is being looked up again opens nothing', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    const endpoint = { baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN };
+    let looked = false;
+    client = new DaemonClient({
+      ...endpoint, reconnectMs: 20, fetch: f.fetch,
+      rediscover: async () => { looked = true; client!.close(); return endpoint; },
+    });
+    await client.connect();
+
+    f.cutStreams();
+    await until(() => looked);
+    await until(() => running!.hub.clientCount === 0, 3000); // the service notices a closed stream late on slow machines
+    await new Promise((r) => setTimeout(r, 200));
+    expect(running!.hub.clientCount).toBe(0);
+    expect(f.counts.events).toBe(1);
+  });
+
+  test('closing while the first stream opens resolves connect quietly', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: f.fetch });
+    const c = client;
+    f.beforeNextStream(() => c.close());
+    await c.connect();
+    await until(() => running!.hub.clientCount === 0, 3000);
+    expect(running!.hub.clientCount).toBe(0);
+  });
+
+  test('identical log lines that arrive while the list reloads are all kept', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: f.fetch });
+    await client.connect();
+    const c = client;
+
+    // Printed twice in the same millisecond, after the history was read: only the live copies count.
+    const at = new Date();
+    f.afterNextLogs(async () => {
+      log(backend, 'keep', 'twice', at);
+      log(backend, 'keep', 'twice', at);
+      await new Promise((r) => setTimeout(r, 50)); // both reach the open stream before the load finishes
+    });
+    f.cutStreams();
+    await until(() => c.get('keep')!.connections.some((e) => e.message === 'twice'));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(c.get('keep')!.connections.filter((e) => e.message === 'twice')).toHaveLength(2);
+  });
+
+  test('a stream that goes silent, without even pings, is replaced', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend, 0, TOKEN, 50);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, staleMs: 150, fetch: f.fetch });
+    await client.connect();
+    const c = client;
+
+    f.freeze();
+    await until(() => f.counts.events >= 2, 1000);
+    log(backend, 'keep', 'after silence');
+    await until(() => c.get('keep')!.connections.some((e) => e.message === 'after silence'));
+  });
+
+  test('a quiet stream that still gets pings is kept', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend, 0, TOKEN, 50);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, staleMs: 600, fetch: f.fetch });
+    await client.connect();
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(f.counts.events).toBe(1);
+  });
+
+  test('an event stream that never answers gives up, so connect fails instead of hanging', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, requestTimeoutMs: 150, fetch: f.fetch });
+    f.hangNextStream();
+    await expect(client.connect()).rejects.toThrow('The background service did not answer');
+  });
+
+  test('an event stream that never answers during a reconnect is retried', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, requestTimeoutMs: 150, fetch: f.fetch });
+    await client.connect();
+    const c = client;
+
+    f.hangNextStream();
+    f.cutStreams();
+    await until(() => f.counts.events >= 3, 1500);
+    log(backend, 'keep', 'after stall');
+    await until(() => c.get('keep')!.connections.some((e) => e.message === 'after stall'));
+  });
+
+  test('a log history that fails to load during a reconnect keeps the lines already shown', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: f.fetch });
+    await client.connect();
+    const c = client;
+    log(backend, 'keep', 'shown before');
+    await until(() => c.get('keep')!.connections.some((e) => e.message === 'shown before'));
+
+    f.failNextLogs();
+    f.cutStreams();
+    await until(() => f.counts.events >= 2);
+    await until(() => running!.hub.clientCount === 1);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(c.get('keep')!.connections.some((e) => e.message === 'shown before')).toBe(true);
+  });
+
+  test('a stream that keeps closing at once is retried less and less often', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: f.fetch });
+    await client.connect();
+
+    f.closeStreamsAtOnce();
+    f.cutStreams();
+    await new Promise((r) => setTimeout(r, 700));
+    // Without backoff a reconnect every 20 ms is ~30 attempts; doubling gives about 5.
+    expect(f.counts.events).toBeLessThan(10);
+  });
+
+  test('closing while the log history loads leaves no stream open', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: f.fetch });
+    await client.connect();
+    const c = client;
+    let closed = false;
+    const after: string[] = [];
+    c.on('stateChange', ({ name }) => { if (closed) after.push(name); });
+    // A live line held during the load must not be applied once the client is closed.
+    f.afterNextLogs(async () => {
+      log(backend, 'keep', 'held');
+      await new Promise((r) => setTimeout(r, 50));
+      c.close();
+      closed = true;
+    });
+    f.cutStreams();
+    await until(() => closed);
+    await until(() => running!.hub.clientCount === 0, 3000); // the service notices a closed stream late on slow machines
+    await new Promise((r) => setTimeout(r, 200));
+    expect(running!.hub.clientCount).toBe(0);
+    expect(after).toEqual([]);
+  });
+
+  test('a reload whose list never answers gives up and retries', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, requestTimeoutMs: 150, fetch: f.fetch });
+    await client.connect();
+    const c = client;
+
+    f.hangNextList();
+    f.cutStreams();
+    await until(() => f.counts.events >= 3, 1500);
+    log(backend, 'keep', 'after hang');
+    await until(() => c.get('keep')!.connections.some((e) => e.message === 'after hang'));
+  });
+
+
+  test('a stream that stayed up resets the backoff, so the next drop reconnects quickly', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, stableMs: 150, fetch: f.fetch });
+    await client.connect();
+
+    // Build up a long backoff with streams that close at once...
+    f.closeStreamsAtOnce();
+    f.cutStreams();
+    await until(() => f.counts.events >= 5, 2000);
+    // ...then let one stay up long enough to count as stable.
+    f.closeStreamsAtOnce(false);
+    await until(() => running!.hub.clientCount === 1, 3000);
+    await new Promise((r) => setTimeout(r, 250));
+
+    const before = f.counts.events;
+    const cutAt = Date.now();
+    f.cutStreams();
+    await until(() => f.counts.events > before, 2000);
+    expect(Date.now() - cutAt).toBeLessThan(400); // the first delay (20 ms), not the built-up one (640 ms+)
+  });
+
+  test('time spent loading the list does not count toward a stable stream', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, stableMs: 100, requestTimeoutMs: 150, fetch: f.fetch });
+    await client.connect();
+
+    // Every reload hangs until its timeout, longer than stableMs: the backoff must still grow.
+    f.hangAllLists();
+    f.cutStreams();
+    await new Promise((r) => setTimeout(r, 2000));
+    f.hangAllLists(false);
+    // Waits of 20, 40, 80, 160, 320, 640 ms plus 150 ms each fit about 5 attempts in 2 s;
+    // resetting every time would make it about 11.
+    expect(f.counts.events).toBeLessThanOrEqual(8);
+  });
+
+  test('a tunnel recreated under the same name does not show the old one\'s log lines', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: f.fetch });
+    await client.connect();
+    const c = client;
+    log(backend, 'keep', 'old tunnel');
+    await until(() => c.get('keep')!.connections.some((e) => e.message === 'old tunnel'));
+
+    // While disconnected it is deleted and created again: same name, new Cloudflare tunnel.
+    running!.hub.close();
+    await close(running!.server);
+    running = null;
+    backend.tunnels.get('keep')!.tunnelId = 'tid-recreated';
+    backend.tunnels.get('keep')!.connections = [];
+    f.failNextLogs();
+    await serve(backend, port);
+    await until(() => c.get('keep')!.tunnelId === 'tid-recreated');
+    expect(c.get('keep')!.connections.some((e) => e.message === 'old tunnel')).toBe(false);
+  });
+
+
+  test('an error reply that never finishes says the service did not answer', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, requestTimeoutMs: 150, fetch: f.fetch });
+    f.stickNextStreamError();
+    await expect(client.connect()).rejects.toThrow('The background service did not answer');
+  });
+
+  test('a tunnel that finished being created while disconnected keeps its lines if its history fails', async () => {
+    const backend = new FakeBackend('keep');
+    backend.tunnels.get('keep')!.tunnelId = null; // still being created
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: f.fetch });
+    await client.connect();
+    const c = client;
+    log(backend, 'keep', 'while creating');
+    await until(() => c.get('keep')!.connections.some((e) => e.message === 'while creating'));
+
+    running!.hub.close();
+    await close(running!.server);
+    running = null;
+    backend.tunnels.get('keep')!.tunnelId = 'tid-keep'; // creation finished meanwhile
+    f.failNextLogs();
+    await serve(backend, port);
+    await until(() => c.get('keep')!.tunnelId === 'tid-keep');
+    expect(c.get('keep')!.connections.some((e) => e.message === 'while creating')).toBe(true);
+  });
+
+  test('reload picks up tunnels the service only found in the config file', async () => {
+    const backend = new FakeBackend('keep');
+    // The tunnel is added quietly; the reload answer is what reports it.
+    const port = await serve(backend, 0, TOKEN, 60_000, async () => {
+      const t = { ...backend.tunnels.get('keep')!, name: 'from-file', config: { ...backend.tunnels.get('keep')!.config, port: 3999, subdomain: 'from-file' } };
+      backend.tunnels.set('from-file', t);
+      return ['from-file'];
+    });
+    const c = await connect(port);
+    expect(c.get('from-file')).toBeUndefined();
+    const added: string[] = [];
+    c.on('tunnelAdded', ({ name }) => added.push(name));
+    await c.reload();
+    expect(c.get('from-file')?.config.port).toBe(3999);
+    expect(added).toEqual(['from-file']);
+  });
+
+  test('reload on an older service, which answers with no body, still finds tunnels from the file', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend, 0, TOKEN, 60_000, async () => {
+      backend.tunnels.set('from-file', { ...backend.tunnels.get('keep')!, name: 'from-file' });
+    });
+    // Services before 0.1.5 answer the reload with 204 and announce nothing.
+    const old = (async (input: any, init?: any) => {
+      const res = await fetch(input, init);
+      return String(input).endsWith('/api/reload') ? new Response(null, { status: 204 }) : res;
+    }) as typeof fetch;
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, fetch: old });
+    await client.connect();
+    await client.reload();
+    expect(client.get('from-file')).toBeDefined();
+  });
+
+  test('a tunnel removed while the reload answer was on its way does not come back', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend, 0, TOKEN, 60_000, async () => {
+      const t = { ...backend.tunnels.get('keep')!, name: 'brief' };
+      backend.tunnels.set('brief', t);
+      backend.emit('tunnelAdded', { name: 'brief', tunnel: t });
+      return ['brief'];
+    });
+    // Someone deletes it right after the service answered, and that event arrives first: the
+    // answer is held until the client has seen it added and then removed.
+    let sawAdded = false;
+    const slow = (async (input: any, init?: any) => {
+      const res = await fetch(input, init);
+      if (String(input).endsWith('/api/reload')) {
+        backend.tunnels.delete('brief');
+        backend.emit('tunnelRemoved', { name: 'brief' });
+        await until(() => sawAdded && client!.get('brief') === undefined, 3000);
+      }
+      return res;
+    }) as typeof fetch;
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, fetch: slow });
+    client.on('tunnelAdded', ({ name }) => { if (name === 'brief') sawAdded = true; });
+    await client.connect();
+    await client.reload();
+    expect(client.get('brief')).toBeUndefined();
+  });
+
+  test('overlapping reloads all respect a tunnel deleted while they were out', async () => {
+    const backend = new FakeBackend('keep');
+    let calls = 0;
+    const port = await serve(backend, 0, TOKEN, 60_000, async () => {
+      if (++calls > 1) return [];
+      const t = { ...backend.tunnels.get('keep')!, name: 'x' };
+      backend.tunnels.set('x', t);
+      backend.emit('tunnelAdded', { name: 'x', tunnel: t });
+      return ['x'];
+    });
+    // The first reload's answer is held back until the second reload is done and x is deleted.
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((r) => { releaseFirst = r; });
+    let reloads = 0;
+    const timed = (async (input: any, init?: any) => {
+      const res = await fetch(input, init);
+      if (String(input).endsWith('/api/reload') && ++reloads === 1) await firstHeld;
+      return res;
+    }) as typeof fetch;
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, fetch: timed });
+    await client.connect();
+    const c = client;
+
+    const first = c.reload();
+    await until(() => reloads === 1);
+    await c.reload();
+    await until(() => c.get('x') !== undefined);
+    backend.tunnels.delete('x');
+    backend.emit('tunnelRemoved', { name: 'x' });
+    await until(() => c.get('x') === undefined);
+    releaseFirst();
+    await first;
+    expect(c.get('x')).toBeUndefined();
+  });
+
+  test('reload does not replace the client\'s list with an older one', async () => {
+    const backend = new FakeBackend('keep');
+    let asked = 0;
+    const port = await serve(backend, 0, TOKEN, 60_000, async () => []);
+    const counting = (async (input: any, init?: any) => { if (String(input).endsWith('/api/tunnels')) asked++; return fetch(input, init); }) as typeof fetch;
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, fetch: counting });
+    await client.connect();
+    const before = asked;
+    await client.reload();
+    expect(asked).toBe(before); // no second full load racing the live events
+  });
+
+  test('an error answer carries its HTTP status', async () => {
+    const port = await serve(new FakeBackend());
+    const c = await connect(port);
+    // This test service has no auth settings, so the password route answers 404.
+    const err = await c.setPassword('brand-new-password').catch((e) => e);
+    expect(err).toBeInstanceOf(DaemonRequestError);
+    expect(err.status).toBe(404);
+  });
+
+  test('without history it skips loading every tunnel\'s log lines', async () => {
+    const backend = new FakeBackend('a', 'b');
+    const port = await serve(backend);
+    const asked: string[] = [];
+    const counting = (async (input: any, init?: any) => { asked.push(String(input)); return fetch(input, init); }) as typeof fetch;
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, history: false, fetch: counting });
+    await client.connect();
+    expect([...client.getAll().keys()].sort()).toEqual(['a', 'b']);
+    expect(asked.filter((u) => u.includes('/logs'))).toEqual([]);
   });
 
   test('reconnect follows a restarted daemon with a new token and port', async () => {

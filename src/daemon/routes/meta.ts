@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { HttpError, PUBLIC_ROUTES, sendJson, type DaemonDeps } from '../server.js';
-import { toWireEvent } from '../wire.js';
+import { toWireEvent, toWireTunnel } from '../wire.js';
 import type { Router } from '../router.js';
 
 const DEFAULT_LOG_LIMIT = 200;
@@ -26,6 +26,7 @@ export function registerMetaRoutes(router: Router, deps: DaemonDeps): void {
     const tunnels = [...service.getAll().values()];
     sendJson(res, 200, {
       version: info.version,
+      commit: info.commit,
       uptimeMs: Date.now() - info.startedAt,
       counts: {
         total: tunnels.length,
@@ -78,8 +79,12 @@ export function registerMetaRoutes(router: Router, deps: DaemonDeps): void {
   });
 
   router.add('POST', '/api/reload', async ({ res }) => {
-    await need(deps.reload)();
-    res.writeHead(204);
-    res.end();
+    const names = (await need(deps.reload)()) ?? [];
+    // The tunnels it picked up, so the caller can use them without waiting for their events.
+    const added = names
+      .map((name) => service.get(name))
+      .filter((t) => t !== undefined)
+      .map((t) => toWireTunnel(t, deps.isSystemTunnel(t.name)));
+    sendJson(res, 200, { added });
   });
 }

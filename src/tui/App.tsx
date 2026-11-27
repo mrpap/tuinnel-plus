@@ -108,7 +108,8 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'ADD_TUNNEL': {
       const tunnels = new Map(state.tunnels);
       tunnels.set(action.name, action.tunnel);
-      const mode: AppMode = 'dashboard';
+      // A tunnel added elsewhere mustn't cut off the setup wizard or the quit prompt.
+      const mode: AppMode = state.mode === 'onboarding' || state.mode === 'quitting' ? state.mode : 'dashboard';
       return {
         ...state,
         tunnels,
@@ -428,8 +429,13 @@ export function App({ tunnelService, zones, defaultZone, onShutdown, onOnboardin
       config.defaultZone = onboardingConfig.defaultZone;
     }
     writeConfig(config);
-    await onOnboardingComplete?.();
-    dispatch({ type: 'SET_MODE', mode: 'empty' });
+    try {
+      await onOnboardingComplete?.();
+    } catch {
+      // The token is saved; a service that missed it picks it up on its next restart or reload.
+    }
+    // Tunnels the service picked up from the config file meanwhile are worth showing.
+    dispatch({ type: 'SET_MODE', mode: tunnelService.getAll().size > 0 ? 'dashboard' : 'empty' });
   };
 
   const handleOnboardingCancel = () => {

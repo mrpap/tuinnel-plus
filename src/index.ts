@@ -2,14 +2,14 @@
 
 import { Command } from 'commander';
 import { setVerbose } from './utils/logger.js';
-import { VERSION } from './version.js';
+import { VERSION_LABEL } from './version.js';
 
 const program = new Command();
 
 program
   .name('tuinnel-plus')
   .description('Manage Cloudflare Tunnels from a terminal dashboard, a web UI, or the command line')
-  .version(VERSION, '-v, --version')
+  .version(VERSION_LABEL, '-v, --version')
   .configureHelp({ showGlobalOptions: true })
   .helpCommand(false);
 
@@ -83,7 +83,7 @@ program
 // tuinnel-plus add <port>
 program
   .command('add')
-  .description('Add tunnel config (does NOT start tunnel)')
+  .description('Add a tunnel without starting it (with the service running, also creates it in Cloudflare)')
   .argument('<port>', 'Local port to tunnel')
   .option('-s, --subdomain <name>', 'Subdomain name (required in non-interactive mode)')
   .option('-z, --zone <domain>', 'Zone/domain to use')

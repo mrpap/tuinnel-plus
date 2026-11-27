@@ -290,6 +290,10 @@ Tests never touch your real `~/.tuinnel`: a preload points `TUINNEL_HOME` at a t
 
 See [ROADMAP.md](ROADMAP.md) for what's planned next.
 
+## Support
+
+If tuinnel-plus is useful to you, you can support its development through [PayPal](https://paypal.me/anpa). Bug reports, ideas and stars help too.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

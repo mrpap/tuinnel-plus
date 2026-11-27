@@ -5,7 +5,7 @@
 - Fix: the bars under "Responses by status" in a tunnel's metrics were always empty
 - Fix: opening the web UI directly on Settings showed remote access as off even when it was on, so pressing Save there turned it off
 - Fix: when the terminal dashboard reconnected to a restarted service, a tunnel change that happened during the reconnect could be missed, so the dashboard showed an old state
-- The terminal dashboard notices a service that stopped answering and reconnects, instead of waiting forever
+- The terminal dashboard and CLI notice a service that stopped answering and reconnect instead of waiting forever, and wait longer between attempts while it keeps failing
 - The web UI shows the version on its own row at the bottom of the sidebar
 - Fix: the version shown in the web UI and by `--version` came from `package.json` when tuinnel-plus started, so a build could show a newer version than it was built from. The version is now fixed when tuinnel-plus is built, and a build made from anything other than a release also shows its commit, for example `0.1.4 (702daf5)` from `--version`
 - The release and CI workflows use the Node 24 versions of GitHub's checkout and setup-node actions

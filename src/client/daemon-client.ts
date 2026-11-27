@@ -11,8 +11,11 @@ const MAX_EVENTS = 1000;
 const logKey = (name: string, timestamp: string, level: string, message: string) =>
   JSON.stringify([name, timestamp, level, message]);
 
+const MAX_RECONNECT_MS = 30_000;
+
 interface Stream {
   ctrl: AbortController;
+  openedAt: number;
   /** Events held while the snapshot loads; null once they have been applied. */
   held: Array<{ event: string; data: any }> | null;
   ended: boolean;
@@ -25,8 +28,10 @@ export interface DaemonClientOptions {
   reconnectMs?: number;
   /** Replace the event stream when nothing, not even a ping, arrives for this long. */
   staleMs?: number;
-  /** Give up on a snapshot request after this long, and retry. */
+  /** Give up on a snapshot request, or on opening the event stream, after this long, and retry. */
   requestTimeoutMs?: number;
+  /** A stream that stayed up this long resets the reconnect backoff. */
+  stableMs?: number;
   /**
    * Where the daemon is now. Each `serve` writes a new token (and may bind
    * another port), so reconnects re-read it rather than reuse the old one.
@@ -45,6 +50,9 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
   private reconnectMs: number;
   private staleMs: number;
   private requestTimeoutMs: number;
+  private stableMs: number;
+  /** Reconnects since a stream last stayed up; each one waits twice as long, up to MAX_RECONNECT_MS. */
+  private failures = 0;
   private closed = false;
   /** The event stream in use; any earlier one is aborted and its events ignored. */
   private stream: Stream | null = null;
@@ -57,6 +65,7 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     // The service pings every 25 s; two missed pings means the stream is dead.
     this.staleMs = opts.staleMs ?? 60_000;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 15_000;
+    this.stableMs = opts.stableMs ?? 10_000;
   }
 
   // -- Connection --
@@ -168,12 +177,13 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     const timeout = () => AbortSignal.timeout(this.requestTimeoutMs);
     const list = await this.request<WireTunnel[]>('GET', '/api/tunnels', undefined, timeout());
     const logs = await Promise.all(list.map((t) =>
-      this.request<WireEvent[]>('GET', `${this.path(t.name)}/logs?limit=${MAX_EVENTS}`, undefined, timeout()).catch(() => [] as WireEvent[])));
+      this.request<WireEvent[]>('GET', `${this.path(t.name)}/logs?limit=${MAX_EVENTS}`, undefined, timeout()).catch(() => null)));
 
     if (this.closed) return;
 
     const next = new Map<string, TunnelRuntime>();
-    list.forEach((w, i) => next.set(w.name, fromWireTunnel(w, logs[i].map(fromWireEvent))));
+    // A history that failed to load keeps the lines already shown rather than emptying them.
+    list.forEach((w, i) => next.set(w.name, fromWireTunnel(w, logs[i]?.map(fromWireEvent) ?? this.cache.get(w.name)?.connections ?? [])));
 
     const previous = this.cache;
     this.cache = next;
@@ -195,7 +205,7 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
   private async sync(diff: boolean): Promise<void> {
     if (this.closed) return;
     this.stream?.ctrl.abort();
-    const stream: Stream = { ctrl: new AbortController(), held: [], ended: false };
+    const stream: Stream = { ctrl: new AbortController(), openedAt: Date.now(), held: [], ended: false };
     this.stream = stream;
     try {
       await this.openStream(stream);
@@ -204,6 +214,9 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
       stream.ctrl.abort();
       if (this.stream === stream) this.stream = null;
       if (this.closed) return; // closed meanwhile: nothing went wrong
+      if (err instanceof Error && err.name === 'TimeoutError') {
+        throw new Error(`The background service did not answer within ${Math.round(this.requestTimeoutMs / 1000)} s`);
+      }
       throw err;
     }
     if (this.closed) {
@@ -233,10 +246,17 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
   }
 
   private async openStream(stream: Stream): Promise<void> {
-    const res = await this.fetchImpl(`${this.opts.baseUrl}/api/events`, {
-      headers: { authorization: `Bearer ${this.opts.localToken}`, accept: 'text/event-stream' },
-      signal: stream.ctrl.signal,
-    });
+    // Until the headers arrive the watchdog isn't running yet; this covers that wait.
+    const timer = setTimeout(() => stream.ctrl.abort(new DOMException('Timed out', 'TimeoutError')), this.requestTimeoutMs);
+    let res: Response;
+    try {
+      res = await this.fetchImpl(`${this.opts.baseUrl}/api/events`, {
+        headers: { authorization: `Bearer ${this.opts.localToken}`, accept: 'text/event-stream' },
+        signal: stream.ctrl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
     if (!res.ok || !res.body) {
       let message: string | undefined;
       try { message = (JSON.parse(await res.text()) as { error?: string }).error; } catch { /* non-JSON */ }
@@ -272,6 +292,7 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     }
     clearTimeout(watchdog);
     stream.ended = true;
+    if (Date.now() - stream.openedAt >= this.stableMs) this.failures = 0;
     // While its sync is still loading the snapshot, that sync notices and reconnects instead.
     if (!this.closed && this.stream === stream && !stream.held) this.scheduleReconnect();
   }
@@ -279,6 +300,8 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
   /** One reconnect loop at a time: a pending retry already covers a second failure. */
   private scheduleReconnect(): void {
     if (this.closed || this.reconnectTimer) return;
+    const delay = Math.min(this.reconnectMs * 2 ** this.failures, MAX_RECONNECT_MS);
+    this.failures++;
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
       if (this.closed) return;
@@ -290,7 +313,7 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
       } catch {
         this.scheduleReconnect();
       }
-    }, this.reconnectMs);
+    }, delay);
   }
 
   private handle(event: string, data: any): void {

@@ -276,13 +276,16 @@ async function loadLogs(name) {
   } catch { /* tunnel may have gone */ }
 }
 
+let remoteAccessRetry = null;
 async function loadRemoteAccess() {
+  clearTimeout(remoteAccessRetry);
   try {
     const settings = await api('/api/settings');
     remoteAccess = settings.selfExpose;
     if (typeof settings.accentHue === 'number' && settings.accentHue !== accentHue) applyAccent(settings.accentHue);
   } catch {
-    remoteAccess = null;
+    // Keep what we had; if nothing has loaded yet, try again shortly.
+    if (!remoteAccess) remoteAccessRetry = setTimeout(loadRemoteAccess, 5000);
   }
   render();
 }
@@ -923,30 +926,37 @@ function settingsView(root) {
   const raMsg = h('span', { class: 'form-ok' });
   const raError = h('p', { class: 'form-error', role: 'alert' });
   const raSave = h('button', { class: 'btn', type: 'button' }, 'Save');
-  const drawUrl = () => fill(raUrl, remoteAccess?.enabled && remoteAccess.url
-    ? ['Reachable at ', h('a', { href: remoteAccess.url, target: '_blank', rel: 'noopener' }, remoteAccess.url)]
-    : 'Only reachable from this machine.');
+  const drawUrl = () => fill(raUrl, !remoteAccess
+    ? 'Loading the current setting…'
+    : remoteAccess.enabled && remoteAccess.url
+      ? ['Reachable at ', h('a', { href: remoteAccess.url, target: '_blank', rel: 'noopener' }, remoteAccess.url)]
+      : 'Only reachable from this machine.');
   drawUrl();
-  const raSwitch = switchButton('Expose admin UI', exposeOn, (on) => { exposeOn = on; raTouched = true; });
+  const raSwitch = switchButton('Expose admin UI', exposeOn, (on) => { exposeOn = on; touched.on = true; });
   // The settings may load after this page is drawn (opening #/settings directly). Show them
-  // when they arrive, unless the user has started editing; saving would otherwise turn it off.
-  let raTouched = false;
+  // when they arrive, in every field the user hasn't changed yet.
+  const touched = { on: false, sub: false, zone: false };
   let raShown = remoteAccess;
-  raSub.addEventListener('input', () => { raTouched = true; });
-  raZone.addEventListener('change', () => { raTouched = true; });
+  raSub.addEventListener('input', () => { touched.sub = true; });
+  raZone.addEventListener('change', () => { touched.zone = true; });
   const syncRemoteAccess = () => {
     // Until the settings have loaded, the form shows defaults: saving them would turn this off.
     if (!raBusy) raSave.disabled = !remoteAccess;
     drawUrl();
-    if (raTouched || remoteAccess === raShown) return;
+    if (!remoteAccess || remoteAccess === raShown) return;
     raShown = remoteAccess;
-    exposeOn = remoteAccess?.enabled ?? false;
-    raSwitch.setAttribute('aria-checked', String(exposeOn));
-    raSub.value = remoteAccess?.subdomain ?? '';
-    if (remoteAccess?.zone && ![...raZone.options].some((o) => o.value === remoteAccess.zone)) {
-      raZone.append(h('option', { value: remoteAccess.zone }, `.${remoteAccess.zone}`));
+    if (!touched.on) {
+      exposeOn = remoteAccess.enabled;
+      raSwitch.setAttribute('aria-checked', String(exposeOn));
     }
-    raZone.value = remoteAccess?.zone ?? '';
+    if (!touched.sub) raSub.value = remoteAccess.subdomain ?? '';
+    // Without a saved zone, keep whatever the zone list selected.
+    if (!touched.zone && remoteAccess.zone) {
+      if (![...raZone.options].some((o) => o.value === remoteAccess.zone)) {
+        raZone.append(h('option', { value: remoteAccess.zone }, `.${remoteAccess.zone}`));
+      }
+      raZone.value = remoteAccess.zone;
+    }
   };
   let raBusy = false;
   syncRemoteAccess();
@@ -960,14 +970,14 @@ function settingsView(root) {
     raSave.disabled = true;
     raBusy = true;
     try {
-      await api('/api/settings/self-expose', {
+      // The reply is the saved state, so the form is right even if reloading settings fails.
+      remoteAccess = await api('/api/settings/self-expose', {
         method: 'PUT',
         body: exposeOn ? { enabled: true, subdomain: raSub.value.trim().toLowerCase(), zone: raZone.value } : { enabled: false },
       });
-      await loadRemoteAccess();
       await loadSnapshot();
       // Show what was saved, as the server normalised it.
-      raTouched = false;
+      Object.assign(touched, { on: false, sub: false, zone: false });
       raShown = null;
       syncRemoteAccess();
       raMsg.textContent = 'Saved';
@@ -1125,7 +1135,7 @@ function settingsView(root) {
 
   zoneNames().then((list) => {
     // Keep a zone the user already picked; otherwise select the saved one.
-    const chosen = raTouched ? raZone.value : remoteAccess?.zone;
+    const chosen = touched.zone ? raZone.value : remoteAccess?.zone;
     if (remoteAccess?.zone && !list.includes(remoteAccess.zone)) list.push(remoteAccess.zone);
     if (chosen && !list.includes(chosen)) list.push(chosen);
     fill(raZone, list.map((z) => h('option', { value: z, selected: z === chosen }, `.${z}`)));

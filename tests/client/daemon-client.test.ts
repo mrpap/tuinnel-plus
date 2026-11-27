@@ -19,8 +19,8 @@ afterEach(async () => {
   running = null;
 });
 
-async function serve(backend: FakeBackend, port = 0, token = TOKEN) {
-  const hub = new SseHub(backend, { pingMs: 60_000 });
+async function serve(backend: FakeBackend, port = 0, token = TOKEN, pingMs = 60_000) {
+  const hub = new SseHub(backend, { pingMs });
   let actual = port;
   const { server } = createDaemonServer({
     service: backend,
@@ -61,7 +61,10 @@ function controlledFetch() {
   let onEvents: (() => Promise<void> | void) | null = null;
   let afterLogs: (() => Promise<void> | void) | null = null;
   let hangList = false;
-  let frozen = false;
+  let hangStream = false;
+  let failLogs = false;
+  let closeAtOnce = false;
+  const frozen = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const counts = { events: 0 };
   const impl = (async (input: any, init?: any) => {
     const url = String(input);
@@ -79,11 +82,19 @@ function controlledFetch() {
     }
     if (url.endsWith('/api/events')) {
       counts.events++;
+      if (hangStream) {
+        hangStream = false;
+        await new Promise((_, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal.reason)));
+      }
       if (onEvents) {
         const hook = onEvents;
         onEvents = null;
         await hook();
       }
+    }
+    if (url.includes('/logs') && failLogs) {
+      failLogs = false;
+      return new Response(JSON.stringify({ error: 'busy' }), { status: 500 });
     }
     const res = await fetch(input, init);
     if (url.includes('/logs') && afterLogs) {
@@ -96,13 +107,17 @@ function controlledFetch() {
     const reader = res.body.getReader();
     let ctrl!: ReadableStreamDefaultController<Uint8Array>;
     const body = new ReadableStream<Uint8Array>({
-      start(c) { ctrl = c; streams.add(c); },
+      start(c) {
+        ctrl = c;
+        streams.add(c);
+        if (closeAtOnce) { streams.delete(c); c.close(); }
+      },
       async pull(c) {
         try {
           for (;;) {
             const { done, value } = await reader.read();
             if (done) { streams.delete(c); c.close(); return; }
-            if (!frozen) { c.enqueue(value); return; } // a frozen stream swallows everything, pings too
+            if (!frozen.has(c)) { c.enqueue(value); return; } // a frozen stream swallows everything, pings too
           }
         } catch { streams.delete(c); try { c.close(); } catch { /* already closed */ } }
       },
@@ -122,8 +137,14 @@ function controlledFetch() {
     afterNextLogs(fn: () => Promise<void> | void) { afterLogs = fn; },
     /** The next GET /api/tunnels never answers. */
     hangNextList() { hangList = true; },
-    /** Open streams stop delivering anything, without closing. */
-    freeze(on = true) { frozen = on; },
+    /** The streams open now stop delivering anything, pings included, without closing. */
+    freeze() { for (const c of streams) frozen.add(c); },
+    /** The next event stream request never gets its headers. */
+    hangNextStream() { hangStream = true; },
+    /** The next log history request fails. */
+    failNextLogs() { failLogs = true; },
+    /** Every event stream from now on closes as soon as it opens. */
+    closeStreamsAtOnce(on = true) { closeAtOnce = on; },
     counts,
   };
 }
@@ -442,18 +463,106 @@ describe('DaemonClient', () => {
 
   test('a stream that goes silent, without even pings, is replaced', async () => {
     const backend = new FakeBackend('keep');
-    const port = await serve(backend);
+    const port = await serve(backend, 0, TOKEN, 50);
     const f = controlledFetch();
     client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, staleMs: 150, fetch: f.fetch });
     await client.connect();
     const c = client;
 
     f.freeze();
-    await new Promise((r) => setTimeout(r, 50));
-    f.freeze(false); // only the frozen stream stays silent; new ones work
     await until(() => f.counts.events >= 2, 1000);
     log(backend, 'keep', 'after silence');
     await until(() => c.get('keep')!.connections.some((e) => e.message === 'after silence'));
+  });
+
+  test('a quiet stream that still gets pings is kept', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend, 0, TOKEN, 50);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, staleMs: 150, fetch: f.fetch });
+    await client.connect();
+    await new Promise((r) => setTimeout(r, 600));
+    expect(f.counts.events).toBe(1);
+  });
+
+  test('an event stream that never answers gives up, so connect fails instead of hanging', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, requestTimeoutMs: 150, fetch: f.fetch });
+    f.hangNextStream();
+    await expect(client.connect()).rejects.toThrow('The background service did not answer');
+  });
+
+  test('an event stream that never answers during a reconnect is retried', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, requestTimeoutMs: 150, fetch: f.fetch });
+    await client.connect();
+    const c = client;
+
+    f.hangNextStream();
+    f.cutStreams();
+    await until(() => f.counts.events >= 3, 1500);
+    log(backend, 'keep', 'after stall');
+    await until(() => c.get('keep')!.connections.some((e) => e.message === 'after stall'));
+  });
+
+  test('a log history that fails to load during a reconnect keeps the lines already shown', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: f.fetch });
+    await client.connect();
+    const c = client;
+    log(backend, 'keep', 'shown before');
+    await until(() => c.get('keep')!.connections.some((e) => e.message === 'shown before'));
+
+    f.failNextLogs();
+    f.cutStreams();
+    await until(() => f.counts.events >= 2);
+    await until(() => running!.hub.clientCount === 1);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(c.get('keep')!.connections.some((e) => e.message === 'shown before')).toBe(true);
+  });
+
+  test('a stream that keeps closing at once is retried less and less often', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: f.fetch });
+    await client.connect();
+
+    f.closeStreamsAtOnce();
+    f.cutStreams();
+    await new Promise((r) => setTimeout(r, 700));
+    // Without backoff a reconnect every 20 ms is ~30 attempts; doubling gives about 5.
+    expect(f.counts.events).toBeLessThan(10);
+  });
+
+  test('closing while the log history loads leaves no stream open', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    const f = controlledFetch();
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: f.fetch });
+    await client.connect();
+    const c = client;
+    let closed = false;
+    const after: string[] = [];
+    c.on('stateChange', ({ name }) => { if (closed) after.push(name); });
+    // A live line held during the load must not be applied once the client is closed.
+    f.afterNextLogs(async () => {
+      log(backend, 'keep', 'held');
+      await new Promise((r) => setTimeout(r, 50));
+      c.close();
+      closed = true;
+    });
+    f.cutStreams();
+    await until(() => closed);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(running!.hub.clientCount).toBe(0);
+    expect(after).toEqual([]);
   });
 
   test('a reload whose list never answers gives up and retries', async () => {

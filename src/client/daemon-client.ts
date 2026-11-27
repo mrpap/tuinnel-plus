@@ -32,6 +32,8 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
   private closed = false;
   private stream: AbortController | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Stream events that arrive while a snapshot loads; applied on top of it. */
+  private held: Array<{ event: string; data: unknown }> | null = null;
 
   constructor(private opts: DaemonClientOptions) {
     super();
@@ -42,8 +44,7 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
   // -- Connection --
 
   async connect(): Promise<void> {
-    await this.snapshot(false);
-    await this.openStream();
+    await this.sync(false);
   }
 
   close(): void {
@@ -164,6 +165,27 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     }
   }
 
+  /**
+   * Open the event stream before loading the snapshot, so no change falls between the two.
+   * Events that arrive meanwhile are held and applied after the snapshot, which may be older.
+   */
+  private async sync(diff: boolean): Promise<void> {
+    this.held = [];
+    try {
+      await this.openStream();
+      await this.snapshot(diff);
+    } catch (err) {
+      this.held = null;
+      const stream = this.stream;
+      this.stream = null; // so its pump doesn't schedule a second reconnect
+      stream?.abort();
+      throw err;
+    }
+    const held = this.held;
+    this.held = null;
+    for (const { event, data } of held) this.handle(event, data);
+  }
+
   private async openStream(): Promise<void> {
     const ctrl = new AbortController();
     this.stream = ctrl;
@@ -171,7 +193,11 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
       headers: { authorization: `Bearer ${this.opts.localToken}`, accept: 'text/event-stream' },
       signal: ctrl.signal,
     });
-    if (!res.ok || !res.body) throw new Error(`Could not open the daemon event stream (${res.status})`);
+    if (!res.ok || !res.body) {
+      let message: string | undefined;
+      try { message = (JSON.parse(await res.text()) as { error?: string }).error; } catch { /* non-JSON */ }
+      throw new Error(message ?? `Could not open the daemon event stream (${res.status})`);
+    }
     void this.pump(res.body, ctrl);
   }
 
@@ -184,7 +210,9 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
         const { done, value } = await reader.read();
         if (done) break;
         for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
-          this.handle(frame.event, JSON.parse(frame.data));
+          const data = JSON.parse(frame.data);
+          if (this.held) this.held.push({ event: frame.event, data });
+          else this.handle(frame.event, data);
         }
       }
     } catch {
@@ -199,8 +227,7 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
       try {
         const found = await this.opts.rediscover?.();
         if (found) this.opts = { ...this.opts, ...found };
-        await this.snapshot(true);
-        await this.openStream();
+        await this.sync(true);
       } catch {
         this.scheduleReconnect();
       }

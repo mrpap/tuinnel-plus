@@ -147,6 +147,65 @@ describe('DaemonClient', () => {
     await until(() => c.get('keep')!.state === 'restarting');
   });
 
+  /** Restart the daemon on the same port; `meanwhile` changes the backend while it is down. */
+  async function restart(backend: FakeBackend, port: number, meanwhile: () => Promise<unknown> = async () => {}) {
+    running!.hub.close();
+    await close(running!.server);
+    running = null;
+    await meanwhile();
+    await serve(backend, port);
+  }
+
+  test('a change while the event stream is reconnecting is not lost', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    let slowStream = false;
+    // After the restart, the event stream takes a while to open again.
+    const slow: typeof fetch = (async (input: any, init?: any) => {
+      if (slowStream && String(input).endsWith('/api/events')) await new Promise((r) => setTimeout(r, 150));
+      return fetch(input, init);
+    }) as typeof fetch;
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: slow });
+    await client.connect();
+    const c = client;
+
+    slowStream = true;
+    await restart(backend, port, () => backend.create({ port: 2, subdomain: 'fresh', zone: 'example.com' }));
+    await until(() => c.get('fresh') !== undefined);
+
+    const k = backend.tunnels.get('keep')!;
+    k.state = 'restarting';
+    backend.emit('stateChange', { name: 'keep', state: 'restarting', tunnel: k });
+    await until(() => c.get('keep')!.state === 'restarting', 1000);
+  });
+
+  test('a change that arrives while the tunnel list loads is not overwritten by the older list', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend);
+    let racing = false;
+    // After the restart, the tunnel list is read, then the tunnel changes before the list arrives.
+    const slow: typeof fetch = (async (input: any, init?: any) => {
+      const res = await fetch(input, init);
+      if (racing && String(input).endsWith('/api/tunnels')) {
+        racing = false;
+        const k = backend.tunnels.get('keep')!;
+        k.state = 'restarting';
+        backend.emit('stateChange', { name: 'keep', state: 'restarting', tunnel: k });
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return res;
+    }) as typeof fetch;
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, reconnectMs: 20, fetch: slow });
+    await client.connect();
+    const c = client;
+
+    racing = true;
+    await restart(backend, port);
+    await until(() => !racing);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(c.get('keep')!.state).toBe('restarting');
+  });
+
   test('reconnect follows a restarted daemon with a new token and port', async () => {
     const backend = new FakeBackend('keep');
     let current = { baseUrl: `http://127.0.0.1:${await serve(backend)}`, localToken: TOKEN };

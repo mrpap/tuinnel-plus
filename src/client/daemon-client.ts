@@ -8,6 +8,13 @@ import { SseParser } from './sse-parser.js';
 
 const MAX_EVENTS = 1000;
 
+interface Stream {
+  ctrl: AbortController;
+  /** Events held while the snapshot loads; null once they have been applied. */
+  held: Array<{ event: string; data: any }> | null;
+  ended: boolean;
+}
+
 export interface DaemonClientOptions {
   baseUrl: string;
   localToken: string;
@@ -30,10 +37,9 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
   private fetchImpl: typeof fetch;
   private reconnectMs: number;
   private closed = false;
-  private stream: AbortController | null = null;
+  /** The event stream in use; any earlier one is aborted and its events ignored. */
+  private stream: Stream | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Stream events that arrive while a snapshot loads; applied on top of it. */
-  private held: Array<{ event: string; data: unknown }> | null = null;
 
   constructor(private opts: DaemonClientOptions) {
     super();
@@ -50,7 +56,8 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
   close(): void {
     this.closed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.stream?.abort();
+    this.reconnectTimer = null;
+    this.stream?.ctrl.abort();
     this.stream = null;
   }
 
@@ -149,6 +156,8 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     const logs = await Promise.all(list.map((t) =>
       this.request<WireEvent[]>('GET', `${this.path(t.name)}/logs?limit=${MAX_EVENTS}`).catch(() => [] as WireEvent[])));
 
+    if (this.closed) return;
+
     const next = new Map<string, TunnelRuntime>();
     list.forEach((w, i) => next.set(w.name, fromWireTunnel(w, logs[i].map(fromWireEvent))));
 
@@ -170,59 +179,74 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
    * Events that arrive meanwhile are held and applied after the snapshot, which may be older.
    */
   private async sync(diff: boolean): Promise<void> {
-    this.held = [];
+    this.stream?.ctrl.abort();
+    const stream: Stream = { ctrl: new AbortController(), held: [], ended: false };
+    this.stream = stream;
     try {
-      await this.openStream();
+      await this.openStream(stream);
       await this.snapshot(diff);
+      if (this.closed) return;
+      // Dropped while the snapshot loaded: retry rather than run without live events.
+      if (stream.ended) throw new Error('The daemon event stream closed');
     } catch (err) {
-      this.held = null;
-      const stream = this.stream;
-      this.stream = null; // so its pump doesn't schedule a second reconnect
-      stream?.abort();
+      stream.ctrl.abort();
+      if (this.stream === stream) this.stream = null;
       throw err;
     }
-    const held = this.held;
-    this.held = null;
-    for (const { event, data } of held) this.handle(event, data);
+    const held = stream.held!;
+    stream.held = null;
+    for (const { event, data } of held) {
+      // A line logged while the snapshot loaded can also be in the history it just read.
+      if (event === 'log' && this.hasLogged(data.name, data.event)) continue;
+      this.handle(event, data);
+    }
   }
 
-  private async openStream(): Promise<void> {
-    const ctrl = new AbortController();
-    this.stream = ctrl;
+  private hasLogged(name: string, event: WireEvent): boolean {
+    const seen = this.cache.get(name)?.connections ?? [];
+    return seen.some((e) => e.timestamp.toISOString() === event.timestamp && e.level === event.level && e.message === event.message);
+  }
+
+  private async openStream(stream: Stream): Promise<void> {
     const res = await this.fetchImpl(`${this.opts.baseUrl}/api/events`, {
       headers: { authorization: `Bearer ${this.opts.localToken}`, accept: 'text/event-stream' },
-      signal: ctrl.signal,
+      signal: stream.ctrl.signal,
     });
     if (!res.ok || !res.body) {
       let message: string | undefined;
       try { message = (JSON.parse(await res.text()) as { error?: string }).error; } catch { /* non-JSON */ }
       throw new Error(message ?? `Could not open the daemon event stream (${res.status})`);
     }
-    void this.pump(res.body, ctrl);
+    void this.pump(res.body, stream);
   }
 
-  private async pump(body: ReadableStream<Uint8Array>, ctrl: AbortController): Promise<void> {
+  private async pump(body: ReadableStream<Uint8Array>, stream: Stream): Promise<void> {
     const parser = new SseParser();
     const decoder = new TextDecoder();
     const reader = body.getReader();
     try {
       for (;;) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done || this.stream !== stream) break;
         for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
           const data = JSON.parse(frame.data);
-          if (this.held) this.held.push({ event: frame.event, data });
+          if (stream.held) stream.held.push({ event: frame.event, data });
           else this.handle(frame.event, data);
         }
       }
     } catch {
       // aborted or connection dropped
     }
-    if (!this.closed && this.stream === ctrl) this.scheduleReconnect();
+    stream.ended = true;
+    // While its sync is still loading the snapshot, that sync notices and retries instead.
+    if (!this.closed && this.stream === stream && !stream.held) this.scheduleReconnect();
   }
 
+  /** One reconnect loop at a time: a pending retry already covers a second failure. */
   private scheduleReconnect(): void {
+    if (this.closed || this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
       if (this.closed) return;
       try {
         const found = await this.opts.rediscover?.();

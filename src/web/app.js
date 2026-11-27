@@ -294,6 +294,7 @@ async function loadVersion() {
     daemonStatus = null;
   }
   $('version').textContent = versionText(daemonStatus);
+  $('version').title = versionText(daemonStatus); // the full label if the row cuts it off
   if (route.view === 'settings') view.update?.();
 }
 

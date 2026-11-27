@@ -926,6 +926,25 @@ function settingsView(root) {
     ? ['Reachable at ', h('a', { href: remoteAccess.url, target: '_blank', rel: 'noopener' }, remoteAccess.url)]
     : 'Only reachable from this machine.');
   drawUrl();
+  const raSwitch = switchButton('Expose admin UI', exposeOn, (on) => { exposeOn = on; raTouched = true; });
+  // The settings may load after this page is drawn (opening #/settings directly). Show them
+  // when they arrive, unless the user has started editing; saving would otherwise turn it off.
+  let raTouched = false;
+  let raShown = remoteAccess;
+  raSub.addEventListener('input', () => { raTouched = true; });
+  raZone.addEventListener('change', () => { raTouched = true; });
+  const syncRemoteAccess = () => {
+    if (raTouched || remoteAccess === raShown) return;
+    raShown = remoteAccess;
+    exposeOn = remoteAccess?.enabled ?? false;
+    raSwitch.setAttribute('aria-checked', String(exposeOn));
+    raSub.value = remoteAccess?.subdomain ?? '';
+    if (remoteAccess?.zone) {
+      if (![...raZone.options].some((o) => o.value === remoteAccess.zone)) raZone.append(h('option', { value: remoteAccess.zone }, `.${remoteAccess.zone}`));
+      raZone.value = remoteAccess.zone;
+    }
+    drawUrl();
+  };
   raSave.addEventListener('click', async () => {
     raError.textContent = '';
     raMsg.textContent = '';
@@ -941,6 +960,8 @@ function settingsView(root) {
       });
       await loadRemoteAccess();
       await loadSnapshot();
+      raShown = remoteAccess;
+      raTouched = false;
       drawUrl();
       raMsg.textContent = 'Saved';
       setTimeout(() => { raMsg.textContent = ''; }, 1800);
@@ -1062,7 +1083,7 @@ function settingsView(root) {
       card('public', 'Remote access',
         h('div', { class: 'card-body' },
           h('p', { class: 'card-desc' }, 'Expose this dashboard through its own Cloudflare tunnel, behind your password.'),
-          switchButton('Expose admin UI', exposeOn, (on) => { exposeOn = on; }),
+          raSwitch,
           h('div', { class: 'host-input' }, raSub, h('span', { class: 'select-wrap' }, raZone, icon('expand_more'))),
           raUrl, raError,
           h('div', { class: 'end-row' }, raMsg, raSave))),
@@ -1102,6 +1123,7 @@ function settingsView(root) {
   return {
     update() {
       drawTheme();
+      syncRemoteAccess();
       const label = versionText(daemonStatus);
       aboutVersion.textContent = label ? `tuinnel-plus ${label}` : '—';
     },

@@ -131,6 +131,22 @@ describe('settings routes', () => {
     expect((await raw(port, { method: 'POST', path: '/api/settings/password/reload', headers: bearer })).status).toBe(204);
     expect((await raw(port, { path: '/api/tunnels', headers: { cookie } })).status).toBe(401);
   });
+
+  test('the CLI sets the password through the service: bearer-only, checked, and signs browsers out', async () => {
+    const { port, store } = await boot();
+    const cookie = cookieOf(await raw(port, { method: 'POST', path: '/api/auth/login', body: { password: 'old-password' } }));
+    const set = (headers: Record<string, string>, password: unknown) =>
+      raw(port, { method: 'PUT', path: '/api/settings/password/local', headers, body: { password } });
+
+    expect((await set({ cookie }, 'brand-new-password')).status).toBe(403);
+    expect((await set({ authorization: `Bearer ${'w'.repeat(64)}` }, 'brand-new-password')).status).toBe(401);
+    expect((await set(bearer, 'short')).status).toBe(400);
+    expect(verifyPassword('old-password', store.current.web!.passwordHash!)).toBe(true);
+
+    expect((await set(bearer, 'brand-new-password')).status).toBe(204);
+    expect(verifyPassword('brand-new-password', store.current.web!.passwordHash!)).toBe(true);
+    expect((await raw(port, { path: '/api/tunnels', headers: { cookie } })).status).toBe(401);
+  });
 });
 
 describe('allowedHostsFor', () => {

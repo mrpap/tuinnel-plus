@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import { createInterface } from 'readline';
 import { readConfig, configExists, getToken as getTokenOrThrow } from '../config/store.js';
-import { addTunnelToConfig } from '../config/tunnel-config.js';
+import { resolveNewTunnel } from '../config/tunnel-config.js';
 import { ensureBinary } from '../cloudflared/binary.js';
 import { extractQuickTunnelUrl } from '../cloudflared/log-parser.js';
 import { logger } from '../utils/logger.js';
@@ -106,41 +106,39 @@ async function runNamedTunnels(
   options: UpOptions,
   getClient: () => Promise<DaemonClient>,
 ): Promise<void> {
-  const config = configExists() ? readConfig() : null;
-
-  // Resolve each port to a tunnel config (from config or inline add)
-  const tunnelsToStart: Array<{ name: string; tunnelConfig: TunnelConfig }> = [];
-
-  for (const port of ports) {
-    // Look up port in existing config
-    let found = false;
-    if (config?.tunnels) {
-      for (const [name, tc] of Object.entries(config.tunnels)) {
-        if (tc.port === port) {
-          tunnelsToStart.push({ name, tunnelConfig: tc });
-          found = true;
-          break;
-        }
-      }
-    }
-
-    if (!found) {
-      // Add tunnel to config via shared flow
-      const result = await addTunnelToConfig({
-        port,
-        subdomain: options.subdomain,
-        zone: options.zone,
-        failOnDuplicate: false,
-      });
-      tunnelsToStart.push({ name: result.name, tunnelConfig: result.config });
-    }
-  }
-
-  // The background service owns the tunnels; make it pick up any new config.
+  // The background service owns the tunnels and the config: look tunnels up in it, and have
+  // it create new ones (in Cloudflare too) rather than writing the config file here.
   const client = await getClient();
   let started = 0;
   try {
+    // Read-only for the file: the service adds tunnels it finds there but doesn't know yet
+    // (hand edits, an older CLI, or an `add` that ran while the service was starting).
     await client.reload();
+    const created = new Map<string, TunnelConfig>();
+    const defaultZone = (configExists() ? readConfig() : null)?.defaultZone;
+    const tunnelsToStart: Array<{ name: string; tunnelConfig: TunnelConfig }> = [];
+    for (const port of ports) {
+      const known = [...client.getAll().values()].find((t) => t.config.port === port);
+      if (known) {
+        tunnelsToStart.push({ name: known.name, tunnelConfig: known.config });
+        continue;
+      }
+      const { name, config } = await resolveNewTunnel({ port, subdomain: options.subdomain, zone: options.zone }, defaultZone);
+      // Created a moment ago in this loop: the service's event about it may not be in yet.
+      const existing = client.get(name)?.config ?? created.get(name);
+      if (existing) {
+        // Same name already set up (on another port): start that one, as before.
+        if (!tunnelsToStart.some((t) => t.name === name)) tunnelsToStart.push({ name, tunnelConfig: existing });
+        continue;
+      }
+      try {
+        await client.create({ port, subdomain: config.subdomain, zone: config.zone });
+        created.set(name, config);
+        tunnelsToStart.push({ name, tunnelConfig: config });
+      } catch (err: unknown) {
+        logger.error(`Failed to create tunnel "${name}": ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
 
     const total = tunnelsToStart.length;
     for (let i = 0; i < total; i++) {

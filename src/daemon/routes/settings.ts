@@ -19,6 +19,8 @@ const SelfExposeBody = z.discriminatedUnion('enabled', [
 
 const PasswordChangeBody = z.object({ current: z.string(), next: z.string() });
 
+const PasswordSetBody = z.object({ password: z.string() });
+
 const AppearanceBody = z.object({ accentHue: WebConfigSchema.shape.accentHue.unwrap() });
 
 export function registerSettingsRoutes(router: Router, deps: DaemonDeps): void {
@@ -76,7 +78,24 @@ export function registerSettingsRoutes(router: Router, deps: DaemonDeps): void {
     sendJson(res, 200, { ok: true });
   });
 
-  // `tuinnel-plus password set` calls this after writing a new hash to config.
+  // `tuinnel-plus password set` on this machine: the service writes the new hash itself, so
+  // it is the only writer of the config, and signs every browser out.
+  router.add('PUT', '/api/settings/password/local', async ({ req, res, body }) => {
+    if (!/^Bearer /.test(req.headers.authorization ?? '')) throw new HttpError(403, 'Local clients only.');
+    const { store, sessions } = auth();
+    const { password } = PasswordSetBody.parse(await body());
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      throw new HttpError(400, `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+    }
+    const config = store.read() ?? { version: 1 as const, tunnels: {} };
+    store.write({ ...config, web: { ...config.web, passwordHash: hashPassword(password) } });
+    sessions.revokeAll();
+    deps.hub?.dropInvalidSessions();
+    res.writeHead(204);
+    res.end();
+  });
+
+  // Older `tuinnel-plus password set` writes the hash to config itself and then calls this.
   router.add('POST', '/api/settings/password/reload', ({ req, res }) => {
     if (!/^Bearer /.test(req.headers.authorization ?? '')) throw new HttpError(403, 'Local clients only.');
     auth().sessions.revokeAll();

@@ -191,7 +191,7 @@ Check the setup with `tuinnel-plus doctor`. It verifies the config file, the tok
 | `tuinnel-plus down [names...]` | Stop tunnels |
 | `tuinnel-plus down --all` | Stop all running tunnels |
 | `tuinnel-plus down <name> --clean` | Stop a tunnel and delete it from Cloudflare and the config |
-| `tuinnel-plus add <port>` | Add a tunnel without starting it |
+| `tuinnel-plus add <port>` | Add a tunnel without starting it. With the service running, it also creates the Cloudflare tunnel and DNS record |
 | `tuinnel-plus remove <name>` | Delete a tunnel: stop it and remove it from Cloudflare and the config |
 | `tuinnel-plus list` | List configured tunnels |
 | `tuinnel-plus status` | Show running tunnels and their state |

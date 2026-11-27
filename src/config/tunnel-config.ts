@@ -19,12 +19,14 @@ export interface AddTunnelResult {
 }
 
 /**
- * Add a tunnel to the local config file. Handles subdomain/zone resolution
- * via CLI options or interactive prompts. Used by both `add` and `up` commands.
+ * Work out a new tunnel's subdomain and zone from CLI options, the default zone, or
+ * interactive prompts. Saves nothing. Used by both `add` and `up` commands.
  */
-export async function addTunnelToConfig(options: AddTunnelOptions): Promise<AddTunnelResult> {
+export async function resolveNewTunnel(
+  options: Pick<AddTunnelOptions, 'port' | 'subdomain' | 'zone'>,
+  defaultZone?: string,
+): Promise<{ name: string; config: TunnelConfig }> {
   const isInteractive = process.stdin.isTTY ?? false;
-  const config = configExists() ? readConfig() ?? getDefaultConfig() : getDefaultConfig();
 
   // 1. Determine subdomain
   let subdomain: string;
@@ -52,8 +54,8 @@ export async function addTunnelToConfig(options: AddTunnelOptions): Promise<AddT
   let zone: string;
   if (options.zone) {
     zone = options.zone;
-  } else if (config.defaultZone) {
-    zone = config.defaultZone;
+  } else if (defaultZone) {
+    zone = defaultZone;
   } else if (isInteractive) {
     const answer = await prompt('Enter zone (domain): ');
     if (!answer) {
@@ -66,7 +68,16 @@ export async function addTunnelToConfig(options: AddTunnelOptions): Promise<AddT
     process.exit(1);
   }
 
-  const name = subdomain;
+  return { name: subdomain, config: { port: options.port, subdomain, zone, protocol: 'http' } };
+}
+
+/**
+ * Add a tunnel to the local config file, for when no background service is running
+ * (otherwise the service creates it and owns the write).
+ */
+export async function addTunnelToConfig(options: AddTunnelOptions): Promise<AddTunnelResult> {
+  const config = configExists() ? readConfig() ?? getDefaultConfig() : getDefaultConfig();
+  const { name, config: tunnelConfig } = await resolveNewTunnel(options, config.defaultZone);
 
   // 3. Check for duplicate
   if (config.tunnels[name]) {
@@ -80,12 +91,6 @@ export async function addTunnelToConfig(options: AddTunnelOptions): Promise<AddT
   }
 
   // 4. Save to config
-  const tunnelConfig: TunnelConfig = {
-    port: options.port,
-    subdomain,
-    zone,
-    protocol: 'http',
-  };
   config.tunnels[name] = tunnelConfig;
   writeConfig(config);
 

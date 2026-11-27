@@ -136,11 +136,12 @@ describe('meta routes', () => {
     expect((await raw(port, { method: 'POST', path: '/api/purge', body: { ids: [1] } })).status).toBe(400);
   });
 
-  test('reload calls the reload dep', async () => {
+  test('reload calls the reload dep and answers with the tunnels it picked up', async () => {
     let reloaded = 0;
-    const port = await boot(new FakeBackend(), { reload: async () => { reloaded++; } });
+    const port = await boot(new FakeBackend('old', 'fresh'), { reload: async () => { reloaded++; return ['fresh']; } });
     const res = await raw(port, { method: 'POST', path: '/api/reload' });
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(200);
     expect(reloaded).toBe(1);
+    expect(res.json.added.map((t: { name: string }) => t.name)).toEqual(['fresh']);
   });
 });

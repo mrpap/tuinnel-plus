@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- When the background service is running, `add`, `up` and `password set` go through it instead of writing the config file themselves, so a change made at the same moment in the web UI or the service can no longer be overwritten. `add` now also creates the Cloudflare tunnel and DNS record right away, like the web UI, so a wrong zone or token shows up immediately
+- Tunnels added to the config file by hand are picked up by the running service when you run `add` or `up`, and now also appear in open web UI and terminal dashboards without a reconnect
+- Creating a tunnel without a Cloudflare API token now says to run `tuinnel-plus init`, in the web UI too
+- `add` warns when another tunnel already uses the same port
+- Fix: after the terminal dashboard's first-run setup, it showed "No tunnels configured yet" even when tunnels existed, and a tunnel added from another terminal could cut the setup off
 - Fix: the bars under "Responses by status" in a tunnel's metrics were always empty
 - Fix: opening the web UI directly on Settings showed remote access as off even when it was on, so pressing Save there turned it off
 - Fix: when the terminal dashboard reconnected to a restarted service, a tunnel change that happened during the reconnect could be missed, so the dashboard showed an old state

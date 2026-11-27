@@ -83,7 +83,7 @@ program
 // tuinnel-plus add <port>
 program
   .command('add')
-  .description('Add tunnel config (does NOT start tunnel)')
+  .description('Add a tunnel without starting it (with the service running, also creates it in Cloudflare)')
   .argument('<port>', 'Local port to tunnel')
   .option('-s, --subdomain <name>', 'Subdomain name (required in non-interactive mode)')
   .option('-z, --zone <domain>', 'Zone/domain to use')

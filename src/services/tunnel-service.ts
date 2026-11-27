@@ -137,6 +137,8 @@ function makeRuntime(name: string, config: TunnelConfig): TunnelRuntime {
 
 export class TunnelService extends EventEmitter {
   private tunnels = new Map<string, TunnelRuntime>();
+  /** Names being recreated by update(): their config entry is stale until create() replaces it. */
+  private recreating = new Set<string>();
   private processes = new Map<string, CloudflaredProcess>();
   /** Tunnels being stopped on purpose, so their exit isn't reported as an error. */
   private stopping = new Set<string>();
@@ -175,6 +177,9 @@ export class TunnelService extends EventEmitter {
 
     if (this.tunnels.has(name)) {
       throw new Error(`Tunnel "${name}" already exists`);
+    }
+    if (!this.token) {
+      throw new Error('No Cloudflare API token configured. Run `tuinnel-plus init` first.');
     }
 
     const config: TunnelConfig = { port, subdomain, zone, protocol, lastState: 'stopped' };
@@ -230,18 +235,23 @@ export class TunnelService extends EventEmitter {
         await this.stop(name);
       }
       await this.deleteCloudflareResources(name, runtime);
-      this.tunnels.delete(name);
-      if (newName !== name) {
-        this.removeTunnelFromConfig(name);
-        this.emit('tunnelRemoved', { name });
-      }
+      this.recreating.add(name);
+      try {
+        this.tunnels.delete(name);
+        if (newName !== name) {
+          this.removeTunnelFromConfig(name);
+          this.emit('tunnelRemoved', { name });
+        }
 
-      await this.create({
-        port: updatedConfig.port,
-        subdomain: updatedConfig.subdomain,
-        zone: updatedConfig.zone,
-        protocol: updatedConfig.protocol,
-      });
+        await this.create({
+          port: updatedConfig.port,
+          subdomain: updatedConfig.subdomain,
+          zone: updatedConfig.zone,
+          protocol: updatedConfig.protocol,
+        });
+      } finally {
+        this.recreating.delete(name);
+      }
 
       if (wasRunning) {
         await this.start(newName);
@@ -374,16 +384,24 @@ export class TunnelService extends EventEmitter {
 
   // -- Batch operations --
 
-  loadFromConfig(): void {
+  /**
+   * Pick up tunnels in the config file that aren't loaded yet. Read-only for the file; tunnels
+   * already loaded are left as they are. Announces and returns the new ones.
+   */
+  loadFromConfig(): string[] {
     const config = this.store.read();
-    if (!config) return;
+    if (!config) return [];
 
+    const added: string[] = [];
     for (const [name, tunnelConfig] of Object.entries(config.tunnels)) {
-      if (!this.tunnels.has(name)) {
+      if (!this.tunnels.has(name) && !this.recreating.has(name)) {
         const runtime = makeRuntime(name, tunnelConfig);
         this.tunnels.set(name, runtime);
+        added.push(name);
+        this.emit('tunnelAdded', { name, tunnel: runtime });
       }
     }
+    return added;
   }
 
   /** Start every tunnel whose lastState is running and isn't up. Returns the ones that failed. */

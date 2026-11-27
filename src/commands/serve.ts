@@ -113,7 +113,7 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
       reload: async () => {
         token = tokenFrom(store);
         service.setToken(token);
-        service.loadFromConfig();
+        return service.loadFromConfig();
       },
       scrape: scrapeMetrics,
       statusInfo: () => {

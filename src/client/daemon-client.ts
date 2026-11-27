@@ -13,6 +13,14 @@ const logKey = (name: string, timestamp: string, level: string, message: string)
 
 const MAX_RECONNECT_MS = 30_000;
 
+/** A request the service answered with an error status. */
+export class DaemonRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'DaemonRequestError';
+  }
+}
+
 interface Stream {
   ctrl: AbortController;
   /** When the snapshot was applied and the stream went live; null while loading. */
@@ -33,6 +41,8 @@ export interface DaemonClientOptions {
   requestTimeoutMs?: number;
   /** A stream that stayed up this long resets the reconnect backoff. */
   stableMs?: number;
+  /** Load each tunnel's log history (the dashboard shows it; one-shot commands don't need it). */
+  history?: boolean;
   /**
    * Where the daemon is now. Each `serve` writes a new token (and may bind
    * another port), so reconnects re-read it rather than reuse the old one.
@@ -58,6 +68,9 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
   /** The event stream in use; any earlier one is aborted and its events ignored. */
   private stream: Stream | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Names removed while any reload request is out, so no answer re-adds them. */
+  private removedDuringReload = new Set<string>();
+  private reloadsOut = 0;
 
   constructor(private opts: DaemonClientOptions) {
     super();
@@ -134,12 +147,40 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     return this.request('GET', '/api/status');
   }
 
+  /**
+   * Have the service re-read the config file and token. It answers with the tunnels it picked
+   * up, so they are usable at once rather than when their live events arrive.
+   */
   async reload(): Promise<void> {
-    await this.request('POST', '/api/reload');
+    this.reloadsOut++;
+    try {
+      const res = await this.request<{ added?: WireTunnel[] } | undefined>('POST', '/api/reload');
+      if (!res) {
+        // A service before 0.1.5 answers 204 and announces nothing: load the list instead.
+        await this.snapshot(true);
+        return;
+      }
+      for (const tunnel of res.added ?? []) {
+        // Deleted since the service answered (its event arrived first): don't bring it back.
+        if (!this.removedDuringReload.has(tunnel.name)) this.handle('added', { name: tunnel.name, tunnel });
+      }
+    } finally {
+      if (--this.reloadsOut === 0) this.removedDuringReload.clear();
+    }
   }
 
   purge(): Promise<PurgeResult> {
     return this.request('POST', '/api/purge');
+  }
+
+  /** Set the web UI password (local clients only). */
+  async setPassword(password: string): Promise<void> {
+    await this.request('PUT', '/api/settings/password/local', { password });
+  }
+
+  /** Tell the service the password in the config file changed (services before 0.1.5). */
+  async reloadPassword(): Promise<void> {
+    await this.request('POST', '/api/settings/password/reload');
   }
 
   async setSelfExpose(body: { enabled: boolean; subdomain?: string; zone?: string }): Promise<{ enabled: boolean; url: string | null }> {
@@ -168,7 +209,7 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     try { data = text ? JSON.parse(text) : undefined; } catch { /* non-JSON */ }
     if (!res.ok) {
       const message = (data as { error?: string } | undefined)?.error ?? `Daemon request failed (${res.status})`;
-      throw new Error(message);
+      throw new DaemonRequestError(message, res.status);
     }
     return data as T;
   }
@@ -177,7 +218,7 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
   private async snapshot(diff: boolean): Promise<void> {
     const timeout = () => AbortSignal.timeout(this.requestTimeoutMs);
     const list = await this.request<WireTunnel[]>('GET', '/api/tunnels', undefined, timeout());
-    const logs = await Promise.all(list.map((t) =>
+    const logs = await Promise.all(list.map((t) => this.opts.history === false ? Promise.resolve(null) :
       this.request<WireEvent[]>('GET', `${this.path(t.name)}/logs?limit=${MAX_EVENTS}`, undefined, timeout()).catch(() => null)));
 
     if (this.closed) return;
@@ -197,7 +238,10 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
     if (!diff) return;
 
     for (const name of previous.keys()) {
-      if (!next.has(name)) this.emit('tunnelRemoved', { name });
+      if (!next.has(name)) {
+        if (this.reloadsOut > 0) this.removedDuringReload.add(name);
+        this.emit('tunnelRemoved', { name });
+      }
     }
     for (const [name, tunnel] of next) {
       if (previous.has(name)) this.emit('stateChange', { name, state: tunnel.state, tunnel });
@@ -359,6 +403,7 @@ export class DaemonClient extends EventEmitter implements TunnelBackend {
   }
 
   private drop(name: string): void {
+    if (this.reloadsOut > 0) this.removedDuringReload.add(name);
     if (this.cache.delete(name)) this.emit('tunnelRemoved', { name });
   }
 }

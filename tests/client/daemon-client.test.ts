@@ -4,7 +4,7 @@ import { createDaemonServer } from '../../src/daemon/server.js';
 import { SseHub } from '../../src/daemon/sse.js';
 import { createGuard } from '../../src/daemon/guard.js';
 import { SessionStore } from '../../src/daemon/auth.js';
-import { DaemonClient } from '../../src/client/daemon-client.js';
+import { DaemonClient, DaemonRequestError } from '../../src/client/daemon-client.js';
 import { PartialDeleteError } from '../../src/services/tunnel-service.js';
 import { FakeBackend, close } from '../daemon/helpers.js';
 
@@ -19,7 +19,7 @@ afterEach(async () => {
   running = null;
 });
 
-async function serve(backend: FakeBackend, port = 0, token = TOKEN, pingMs = 60_000) {
+async function serve(backend: FakeBackend, port = 0, token = TOKEN, pingMs = 60_000, reload?: () => Promise<void>) {
   const hub = new SseHub(backend, { pingMs });
   let actual = port;
   const { server } = createDaemonServer({
@@ -29,6 +29,7 @@ async function serve(backend: FakeBackend, port = 0, token = TOKEN, pingMs = 60_
     isSystemTunnel: () => false,
     hub,
     zones: async () => [{ id: 'z1', name: 'example.com' }],
+    reload,
   });
   await new Promise<void>((r) => server.listen(port, '127.0.0.1', r));
   actual = (server.address() as { port: number }).port;
@@ -686,6 +687,130 @@ describe('DaemonClient', () => {
     await serve(backend, port);
     await until(() => c.get('keep')!.tunnelId === 'tid-keep');
     expect(c.get('keep')!.connections.some((e) => e.message === 'while creating')).toBe(true);
+  });
+
+  test('reload picks up tunnels the service only found in the config file', async () => {
+    const backend = new FakeBackend('keep');
+    // The tunnel is added quietly; the reload answer is what reports it.
+    const port = await serve(backend, 0, TOKEN, 60_000, async () => {
+      const t = { ...backend.tunnels.get('keep')!, name: 'from-file', config: { ...backend.tunnels.get('keep')!.config, port: 3999, subdomain: 'from-file' } };
+      backend.tunnels.set('from-file', t);
+      return ['from-file'];
+    });
+    const c = await connect(port);
+    expect(c.get('from-file')).toBeUndefined();
+    const added: string[] = [];
+    c.on('tunnelAdded', ({ name }) => added.push(name));
+    await c.reload();
+    expect(c.get('from-file')?.config.port).toBe(3999);
+    expect(added).toEqual(['from-file']);
+  });
+
+  test('reload on an older service, which answers with no body, still finds tunnels from the file', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend, 0, TOKEN, 60_000, async () => {
+      backend.tunnels.set('from-file', { ...backend.tunnels.get('keep')!, name: 'from-file' });
+    });
+    // Services before 0.1.5 answer the reload with 204 and announce nothing.
+    const old = (async (input: any, init?: any) => {
+      const res = await fetch(input, init);
+      return String(input).endsWith('/api/reload') ? new Response(null, { status: 204 }) : res;
+    }) as typeof fetch;
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, fetch: old });
+    await client.connect();
+    await client.reload();
+    expect(client.get('from-file')).toBeDefined();
+  });
+
+  test('a tunnel removed while the reload answer was on its way does not come back', async () => {
+    const backend = new FakeBackend('keep');
+    const port = await serve(backend, 0, TOKEN, 60_000, async () => {
+      const t = { ...backend.tunnels.get('keep')!, name: 'brief' };
+      backend.tunnels.set('brief', t);
+      backend.emit('tunnelAdded', { name: 'brief', tunnel: t });
+      return ['brief'];
+    });
+    // Someone deletes it right after the service answered, and that event arrives first.
+    const slow = (async (input: any, init?: any) => {
+      const res = await fetch(input, init);
+      if (String(input).endsWith('/api/reload')) {
+        backend.tunnels.delete('brief');
+        backend.emit('tunnelRemoved', { name: 'brief' });
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      return res;
+    }) as typeof fetch;
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, fetch: slow });
+    await client.connect();
+    await client.reload();
+    expect(client.get('brief')).toBeUndefined();
+  });
+
+  test('overlapping reloads all respect a tunnel deleted while they were out', async () => {
+    const backend = new FakeBackend('keep');
+    let calls = 0;
+    const port = await serve(backend, 0, TOKEN, 60_000, async () => {
+      if (++calls > 1) return [];
+      const t = { ...backend.tunnels.get('keep')!, name: 'x' };
+      backend.tunnels.set('x', t);
+      backend.emit('tunnelAdded', { name: 'x', tunnel: t });
+      return ['x'];
+    });
+    // The first reload's answer is held back until the second reload is done and x is deleted.
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((r) => { releaseFirst = r; });
+    let reloads = 0;
+    const timed = (async (input: any, init?: any) => {
+      const res = await fetch(input, init);
+      if (String(input).endsWith('/api/reload') && ++reloads === 1) await firstHeld;
+      return res;
+    }) as typeof fetch;
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, fetch: timed });
+    await client.connect();
+    const c = client;
+
+    const first = c.reload();
+    await until(() => reloads === 1);
+    await c.reload();
+    await until(() => c.get('x') !== undefined);
+    backend.tunnels.delete('x');
+    backend.emit('tunnelRemoved', { name: 'x' });
+    await until(() => c.get('x') === undefined);
+    releaseFirst();
+    await first;
+    expect(c.get('x')).toBeUndefined();
+  });
+
+  test('reload does not replace the client\'s list with an older one', async () => {
+    const backend = new FakeBackend('keep');
+    let asked = 0;
+    const port = await serve(backend, 0, TOKEN, 60_000, async () => []);
+    const counting = (async (input: any, init?: any) => { if (String(input).endsWith('/api/tunnels')) asked++; return fetch(input, init); }) as typeof fetch;
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, fetch: counting });
+    await client.connect();
+    const before = asked;
+    await client.reload();
+    expect(asked).toBe(before); // no second full load racing the live events
+  });
+
+  test('an error answer carries its HTTP status', async () => {
+    const port = await serve(new FakeBackend());
+    const c = await connect(port);
+    // This test service has no auth settings, so the password route answers 404.
+    const err = await c.setPassword('brand-new-password').catch((e) => e);
+    expect(err).toBeInstanceOf(DaemonRequestError);
+    expect(err.status).toBe(404);
+  });
+
+  test('without history it skips loading every tunnel\'s log lines', async () => {
+    const backend = new FakeBackend('a', 'b');
+    const port = await serve(backend);
+    const asked: string[] = [];
+    const counting = (async (input: any, init?: any) => { asked.push(String(input)); return fetch(input, init); }) as typeof fetch;
+    client = new DaemonClient({ baseUrl: `http://127.0.0.1:${port}`, localToken: TOKEN, history: false, fetch: counting });
+    await client.connect();
+    expect([...client.getAll().keys()].sort()).toEqual(['a', 'b']);
+    expect(asked.filter((u) => u.includes('/logs'))).toEqual([]);
   });
 
   test('reconnect follows a restarted daemon with a new token and port', async () => {
